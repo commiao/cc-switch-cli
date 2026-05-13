@@ -722,14 +722,19 @@ fn load_prompts(state: &AppState, app_type: &AppType) -> Result<PromptsSnapshot,
         .map(|(id, prompt)| PromptRow { id, prompt })
         .collect::<Vec<_>>();
 
-    rows.sort_by(|a, b| {
-        b.prompt
-            .updated_at
-            .unwrap_or(0)
-            .cmp(&a.prompt.updated_at.unwrap_or(0))
-    });
+    sort_prompt_rows(&mut rows);
 
     Ok(PromptsSnapshot { rows })
+}
+
+fn sort_prompt_rows(rows: &mut [PromptRow]) {
+    rows.sort_by(|a, b| {
+        a.prompt
+            .created_at
+            .unwrap_or(0)
+            .cmp(&b.prompt.created_at.unwrap_or(0))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 fn load_config_snapshot(state: &AppState, app_type: &AppType) -> Result<ConfigSnapshot, AppError> {
@@ -997,6 +1002,7 @@ fn load_skills_snapshot() -> Result<SkillsSnapshot, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompt::Prompt;
     use crate::provider::{AuthBinding, AuthBindingSource, ProviderMeta};
     use serde_json::json;
     use serial_test::serial;
@@ -1089,6 +1095,42 @@ mod tests {
             primary_model_id: None,
             default_model_id: None,
         }
+    }
+
+    fn prompt_row(id: &str, created_at: Option<i64>, updated_at: Option<i64>) -> PromptRow {
+        PromptRow {
+            id: id.to_string(),
+            prompt: Prompt {
+                id: id.to_string(),
+                name: id.to_string(),
+                content: String::new(),
+                description: None,
+                enabled: false,
+                created_at,
+                updated_at,
+            },
+        }
+    }
+
+    #[test]
+    fn prompt_rows_sort_by_stable_created_time_not_updated_time() {
+        let mut rows = vec![
+            prompt_row("first", Some(1), Some(300)),
+            prompt_row("second", Some(2), Some(200)),
+            prompt_row("third", Some(3), Some(100)),
+        ];
+
+        sort_prompt_rows(&mut rows);
+        let initial_order = rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(initial_order, vec!["first", "second", "third"]);
+
+        rows[0].prompt.updated_at = Some(1);
+        rows[1].prompt.updated_at = Some(999);
+        rows[2].prompt.updated_at = Some(500);
+
+        sort_prompt_rows(&mut rows);
+        let refreshed_order = rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(refreshed_order, vec!["first", "second", "third"]);
     }
 
     #[test]

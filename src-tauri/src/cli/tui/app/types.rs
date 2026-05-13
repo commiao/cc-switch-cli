@@ -69,6 +69,7 @@ pub enum ConfirmAction {
     SettingsSetClaudePluginIntegration { enabled: bool },
     ProviderApiFormatProxyNotice,
     ProxyEnableAndAutoFailover { app_type: AppType },
+    PromptOpenImportCandidate { filename: String, content: String },
     OpenClawDailyMemoryDelete { filename: String },
     FormSaveBeforeClose,
     EditorDiscard,

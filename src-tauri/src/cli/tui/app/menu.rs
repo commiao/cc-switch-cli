@@ -37,6 +37,7 @@ impl App {
             proxy_visual_transition: None,
             quota_auto_target_key: None,
             quota_last_auto_tick: None,
+            prompt_import_prompted_apps: HashSet::new(),
             local_env_results: Vec::new(),
             local_env_loading: true,
             provider_idx: 0,
@@ -151,6 +152,34 @@ impl App {
         }
 
         Action::SwitchRoute(route)
+    }
+
+    pub(crate) fn maybe_prompt_import_candidate(&mut self, data: &UiData) {
+        if !matches!(self.route, Route::Prompts) {
+            return;
+        }
+        if self.overlay.is_active() || self.form.is_some() || self.editor.is_some() {
+            return;
+        }
+        if !data.prompts.rows.is_empty() {
+            return;
+        }
+        let Some(candidate) = data.prompts.import_candidate.as_ref() else {
+            return;
+        };
+        let app_key = self.app_type.as_str().to_string();
+        if !self.prompt_import_prompted_apps.insert(app_key) {
+            return;
+        }
+
+        self.overlay = Overlay::Confirm(ConfirmOverlay {
+            title: texts::tui_confirm_import_prompt_title().to_string(),
+            message: texts::tui_confirm_import_prompt_message(&candidate.filename),
+            action: ConfirmAction::PromptOpenImportCandidate {
+                filename: candidate.filename.clone(),
+                content: candidate.content.clone(),
+            },
+        });
     }
 
     pub(crate) fn push_route_and_switch(&mut self, route: Route) -> Action {

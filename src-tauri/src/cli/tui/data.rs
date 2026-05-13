@@ -11,6 +11,7 @@ use crate::openclaw_config::{
     OpenClawAgentsDefaults, OpenClawEnvConfig, OpenClawHealthWarning, OpenClawToolsConfig,
 };
 use crate::prompt::Prompt;
+use crate::prompt_files::prompt_file_path;
 use crate::provider::Provider;
 use crate::services::config::BackupInfo;
 use crate::services::SubscriptionQuota;
@@ -170,9 +171,16 @@ pub struct PromptRow {
     pub prompt: Prompt,
 }
 
+#[derive(Debug, Clone)]
+pub struct PromptImportCandidate {
+    pub filename: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PromptsSnapshot {
     pub rows: Vec<PromptRow>,
+    pub import_candidate: Option<PromptImportCandidate>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -724,7 +732,16 @@ fn load_prompts(state: &AppState, app_type: &AppType) -> Result<PromptsSnapshot,
 
     sort_prompt_rows(&mut rows);
 
-    Ok(PromptsSnapshot { rows })
+    let import_candidate = if rows.is_empty() {
+        load_prompt_import_candidate(app_type)
+    } else {
+        None
+    };
+
+    Ok(PromptsSnapshot {
+        rows,
+        import_candidate,
+    })
 }
 
 fn sort_prompt_rows(rows: &mut [PromptRow]) {
@@ -735,6 +752,26 @@ fn sort_prompt_rows(rows: &mut [PromptRow]) {
             .cmp(&b.prompt.created_at.unwrap_or(0))
             .then_with(|| a.id.cmp(&b.id))
     });
+}
+
+fn load_prompt_import_candidate(app_type: &AppType) -> Option<PromptImportCandidate> {
+    let path = prompt_file_path(app_type).ok()?;
+    if !path.exists() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(&path).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.display().to_string());
+
+    Some(PromptImportCandidate { filename, content })
 }
 
 fn load_config_snapshot(state: &AppState, app_type: &AppType) -> Result<ConfigSnapshot, AppError> {

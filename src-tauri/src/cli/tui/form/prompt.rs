@@ -9,11 +9,20 @@ const DEFAULT_PROMPT_CONTENT: &str = "# Write your prompt here\n";
 
 impl PromptMetaFormState {
     pub fn new(id: String, name: String) -> Self {
+        Self::new_with_details(id, name, "", DEFAULT_PROMPT_CONTENT)
+    }
+
+    pub fn new_with_details(
+        id: String,
+        name: String,
+        description: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         let content = EditorState::new(
             "Prompt content",
             EditorKind::Plain,
             EditorSubmit::PromptEdit { id: id.clone() },
-            DEFAULT_PROMPT_CONTENT,
+            content.into(),
         );
         let mut form = Self {
             mode: FormMode::Add,
@@ -22,7 +31,7 @@ impl PromptMetaFormState {
             editing: false,
             id: TextInput::new(id),
             name: TextInput::new(name),
-            description: TextInput::new(""),
+            description: TextInput::new(description.into()),
             content,
             initial_snapshot: Default::default(),
         };

@@ -58,6 +58,12 @@ impl App {
                             app_type: app_type.clone(),
                         }
                     }
+                    ConfirmAction::PromptOpenImportCandidate { filename, content } => {
+                        Action::PromptOpenImportCandidate {
+                            filename: filename.clone(),
+                            content: content.clone(),
+                        }
+                    }
                     ConfirmAction::OpenClawDailyMemoryDelete { filename } => {
                         Action::OpenClawDailyMemoryDelete {
                             filename: filename.clone(),

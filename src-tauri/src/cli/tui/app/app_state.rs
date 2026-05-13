@@ -127,6 +127,10 @@ pub enum Action {
         id: String,
     },
     PromptFormOpenExternal,
+    PromptOpenImportCandidate {
+        filename: String,
+        content: String,
+    },
 
     ConfigExport {
         path: String,
@@ -478,6 +482,7 @@ pub struct App {
     pub proxy_visual_transition: Option<ProxyVisualTransition>,
     pub quota_auto_target_key: Option<String>,
     pub quota_last_auto_tick: Option<u64>,
+    pub prompt_import_prompted_apps: HashSet<String>,
 
     pub local_env_results: Vec<crate::services::local_env_check::ToolCheckResult>,
     pub local_env_loading: bool,

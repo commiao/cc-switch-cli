@@ -880,6 +880,50 @@ pub fn tui_confirm_delete_prompt_message(name: &str, id: &str) -> String {
     }
 }
 
+pub fn tui_confirm_import_prompt_title() -> &'static str {
+    if is_chinese() {
+        "导入现有提示词"
+    } else {
+        "Import Existing Prompt"
+    }
+}
+
+pub fn tui_confirm_import_prompt_message(filename: &str) -> String {
+    if is_chinese() {
+        format!(
+            "当前提示词列表为空，检测到已有 {filename}。是否把它作为新提示词打开编辑？"
+        )
+    } else {
+        format!(
+            "The prompt list is empty and {filename} already exists. Open it as a new editable prompt?"
+        )
+    }
+}
+
+pub fn tui_prompt_default_name() -> &'static str {
+    if is_chinese() {
+        "默认提示词"
+    } else {
+        "Default Prompt"
+    }
+}
+
+pub fn tui_prompt_imported_description(filename: &str) -> String {
+    if is_chinese() {
+        format!("从现有 {filename} 预填")
+    } else {
+        format!("Prefilled from existing {filename}")
+    }
+}
+
+pub fn tui_toast_prompt_import_candidate_missing() -> &'static str {
+    if is_chinese() {
+        "没有可导入的现有提示词文件。"
+    } else {
+        "No existing prompt file is available to import."
+    }
+}
+
 pub fn tui_toast_prompt_edit_not_implemented() -> &'static str {
     if is_chinese() {
         "提示词编辑尚未实现。"

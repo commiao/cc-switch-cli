@@ -265,7 +265,6 @@ pub struct PromptRoot {
 
 use crate::config::{copy_file, get_app_config_dir, get_app_config_path, write_json_file};
 use crate::error::AppError;
-use crate::prompt_files::prompt_file_path;
 use crate::provider::ProviderManager;
 
 /// 应用类型
@@ -439,10 +438,8 @@ impl MultiAppConfig {
         let config_path = get_app_config_path();
 
         if !config_path.exists() {
-            log::info!("配置文件不存在，创建新的多应用配置并自动导入提示词");
-            // 使用新的方法，支持自动导入提示词
-            let config = Self::default_with_auto_import()?;
-            // 立即保存到磁盘
+            log::info!("配置文件不存在，创建新的多应用配置");
+            let config = Self::default();
             config.save()?;
             return Ok(config);
         }
@@ -529,13 +526,6 @@ impl MultiAppConfig {
             updated = true;
         }
 
-        // 对于已经存在的配置文件，如果此前版本还没有 Prompt 功能，
-        // 且 prompts 仍然是空的，则尝试自动导入现有提示词文件。
-        let imported_prompts = config.maybe_auto_import_prompts_for_existing_config()?;
-        if imported_prompts {
-            updated = true;
-        }
-
         // 迁移通用配置片段：claude_common_config_snippet → common_config_snippets.claude
         if let Some(old_claude_snippet) = config.claude_common_config_snippet.take() {
             log::info!(
@@ -546,7 +536,7 @@ impl MultiAppConfig {
         }
 
         if updated {
-            log::info!("配置结构已更新（包括 MCP 迁移或 Prompt 自动导入），保存配置...");
+            log::info!("配置结构已更新，保存配置...");
             config.save()?;
         }
 
@@ -606,128 +596,6 @@ impl MultiAppConfig {
             AppType::OpenCode => &mut self.mcp.opencode,
             AppType::OpenClaw => &mut self.mcp.openclaw,
         }
-    }
-
-    /// 创建默认配置并自动导入已存在的提示词文件
-    fn default_with_auto_import() -> Result<Self, AppError> {
-        log::info!("首次启动，创建默认配置并检测提示词文件");
-
-        let mut config = Self::default();
-
-        // 为每个应用尝试自动导入提示词
-        Self::auto_import_prompt_if_exists(&mut config, AppType::Claude)?;
-        Self::auto_import_prompt_if_exists(&mut config, AppType::Codex)?;
-        Self::auto_import_prompt_if_exists(&mut config, AppType::Gemini)?;
-        Self::auto_import_prompt_if_exists(&mut config, AppType::OpenCode)?;
-        Self::auto_import_prompt_if_exists(&mut config, AppType::OpenClaw)?;
-
-        Ok(config)
-    }
-
-    /// 已存在配置文件时的 Prompt 自动导入逻辑
-    ///
-    /// 适用于「老版本已经生成过 config.json，但当时还没有 Prompt 功能」的升级场景。
-    /// 判定规则：
-    /// - 仅当所有应用的 prompts 都为空时才尝试导入（避免打扰已经在使用 Prompt 功能的用户）
-    /// - 每个应用最多导入一次，对应各自的提示词文件（如 CLAUDE.md/AGENTS.md/GEMINI.md）
-    ///
-    /// 返回值：
-    /// - Ok(true)  表示至少有一个应用成功导入了提示词
-    /// - Ok(false) 表示无需导入或未导入任何内容
-    fn maybe_auto_import_prompts_for_existing_config(&mut self) -> Result<bool, AppError> {
-        // 如果任一应用已经有提示词配置，说明用户已经在使用 Prompt 功能，避免再次自动导入
-        if !self.prompts.claude.prompts.is_empty()
-            || !self.prompts.codex.prompts.is_empty()
-            || !self.prompts.gemini.prompts.is_empty()
-            || !self.prompts.opencode.prompts.is_empty()
-            || !self.prompts.openclaw.prompts.is_empty()
-        {
-            return Ok(false);
-        }
-
-        log::info!("检测到已存在配置文件且 Prompt 列表为空，将尝试从现有提示词文件自动导入");
-
-        let mut imported = false;
-        for app in [
-            AppType::Claude,
-            AppType::Codex,
-            AppType::Gemini,
-            AppType::OpenCode,
-            AppType::OpenClaw,
-        ] {
-            // 复用已有的单应用导入逻辑
-            if Self::auto_import_prompt_if_exists(self, app)? {
-                imported = true;
-            }
-        }
-
-        Ok(imported)
-    }
-
-    /// 检查并自动导入单个应用的提示词文件
-    ///
-    /// 返回值：
-    /// - Ok(true)  表示成功导入了非空文件
-    /// - Ok(false) 表示未导入（文件不存在、内容为空或读取失败）
-    fn auto_import_prompt_if_exists(config: &mut Self, app: AppType) -> Result<bool, AppError> {
-        let file_path = prompt_file_path(&app)?;
-
-        // 检查文件是否存在
-        if !file_path.exists() {
-            log::debug!("提示词文件不存在，跳过自动导入: {file_path:?}");
-            return Ok(false);
-        }
-
-        // 读取文件内容
-        let content = match std::fs::read_to_string(&file_path) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("读取提示词文件失败: {file_path:?}, 错误: {e}");
-                return Ok(false); // 失败时不中断，继续处理其他应用
-            }
-        };
-
-        // 检查内容是否为空
-        if content.trim().is_empty() {
-            log::debug!("提示词文件内容为空，跳过导入: {file_path:?}");
-            return Ok(false);
-        }
-
-        log::info!("发现提示词文件，自动导入: {file_path:?}");
-
-        // 创建提示词对象
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-
-        let id = format!("auto-imported-{timestamp}");
-        let prompt = crate::prompt::Prompt {
-            id: id.clone(),
-            name: format!(
-                "Auto-imported Prompt {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M")
-            ),
-            content,
-            description: Some("Automatically imported on first launch".to_string()),
-            enabled: true, // 自动启用
-            created_at: Some(timestamp),
-            updated_at: Some(timestamp),
-        };
-
-        // 插入到对应的应用配置中
-        let prompts = match app {
-            AppType::Claude => &mut config.prompts.claude.prompts,
-            AppType::Codex => &mut config.prompts.codex.prompts,
-            AppType::Gemini => &mut config.prompts.gemini.prompts,
-            AppType::OpenCode => &mut config.prompts.opencode.prompts,
-            AppType::OpenClaw => &mut config.prompts.openclaw.prompts,
-        };
-
-        prompts.insert(id, prompt);
-
-        log::info!("自动导入完成: {}", app.as_str());
-        Ok(true)
     }
 
     /// 将 v3.6.x 的分应用 MCP 结构迁移到 v3.7.0 的统一结构
@@ -987,27 +855,21 @@ mod tests {
 
     #[test]
     #[serial]
-    fn auto_imports_existing_prompt_when_config_missing() {
+    fn does_not_auto_import_existing_prompt_when_config_missing() {
         let _home = TempHome::new();
         write_prompt_file(AppType::Claude, "# hello");
 
         let config = MultiAppConfig::load().expect("load config");
 
-        assert_eq!(config.prompts.claude.prompts.len(), 1);
-        let prompt = config
-            .prompts
-            .claude
-            .prompts
-            .values()
-            .next()
-            .expect("prompt exists");
-        assert!(prompt.enabled);
-        assert_eq!(prompt.content, "# hello");
+        assert!(
+            config.prompts.claude.prompts.is_empty(),
+            "live prompt files should be offered through the TUI import prompt, not silently imported"
+        );
 
         let config_path = crate::config::get_app_config_path();
         assert!(
             config_path.exists(),
-            "auto import should persist config to disk"
+            "default config should still be persisted to disk"
         );
     }
 
@@ -1026,68 +888,34 @@ mod tests {
 
     #[test]
     #[serial]
-    fn auto_import_happens_only_once() {
+    fn existing_prompt_files_are_left_for_tui_import_prompt() {
         let _home = TempHome::new();
         write_prompt_file(AppType::Claude, "first version");
 
         let first = MultiAppConfig::load().expect("load config");
-        assert_eq!(first.prompts.claude.prompts.len(), 1);
-        let claude_prompt = first
-            .prompts
-            .claude
-            .prompts
-            .values()
-            .next()
-            .expect("prompt exists")
-            .content
-            .clone();
-        assert_eq!(claude_prompt, "first version");
+        assert!(first.prompts.claude.prompts.is_empty());
 
-        // 覆盖文件内容，但保留 config.json
+        // 覆盖文件内容，但保留 config.json；配置加载仍不静默导入。
         write_prompt_file(AppType::Claude, "second version");
         let second = MultiAppConfig::load().expect("load config again");
 
-        assert_eq!(second.prompts.claude.prompts.len(), 1);
-        let prompt = second
-            .prompts
-            .claude
-            .prompts
-            .values()
-            .next()
-            .expect("prompt exists");
-        assert_eq!(
-            prompt.content, "first version",
-            "should not re-import when config already exists"
-        );
+        assert!(second.prompts.claude.prompts.is_empty());
     }
 
     #[test]
     #[serial]
-    fn auto_imports_gemini_prompt_on_first_launch() {
+    fn does_not_auto_import_gemini_prompt_on_first_launch() {
         let _home = TempHome::new();
         write_prompt_file(AppType::Gemini, "# Gemini Prompt\n\nTest content");
 
         let config = MultiAppConfig::load().expect("load config");
 
-        assert_eq!(config.prompts.gemini.prompts.len(), 1);
-        let prompt = config
-            .prompts
-            .gemini
-            .prompts
-            .values()
-            .next()
-            .expect("gemini prompt exists");
-        assert!(prompt.enabled, "gemini prompt should be enabled");
-        assert_eq!(prompt.content, "# Gemini Prompt\n\nTest content");
-        assert_eq!(
-            prompt.description,
-            Some("Automatically imported on first launch".to_string())
-        );
+        assert!(config.prompts.gemini.prompts.is_empty());
     }
 
     #[test]
     #[serial]
-    fn auto_imports_all_three_apps_prompts() {
+    fn does_not_auto_import_multiple_apps_prompts() {
         let _home = TempHome::new();
         write_prompt_file(AppType::Claude, "# Claude prompt");
         write_prompt_file(AppType::Codex, "# Codex prompt");
@@ -1095,42 +923,9 @@ mod tests {
 
         let config = MultiAppConfig::load().expect("load config");
 
-        // 验证所有三个应用的提示词都被导入
-        assert_eq!(config.prompts.claude.prompts.len(), 1);
-        assert_eq!(config.prompts.codex.prompts.len(), 1);
-        assert_eq!(config.prompts.gemini.prompts.len(), 1);
-
-        // 验证所有提示词都被启用
-        assert!(
-            config
-                .prompts
-                .claude
-                .prompts
-                .values()
-                .next()
-                .unwrap()
-                .enabled
-        );
-        assert!(
-            config
-                .prompts
-                .codex
-                .prompts
-                .values()
-                .next()
-                .unwrap()
-                .enabled
-        );
-        assert!(
-            config
-                .prompts
-                .gemini
-                .prompts
-                .values()
-                .next()
-                .unwrap()
-                .enabled
-        );
+        assert!(config.prompts.claude.prompts.is_empty());
+        assert!(config.prompts.codex.prompts.is_empty());
+        assert!(config.prompts.gemini.prompts.is_empty());
     }
 
     #[test]

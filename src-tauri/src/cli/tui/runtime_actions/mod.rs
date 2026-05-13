@@ -144,11 +144,13 @@ pub(crate) fn handle_action(
         Action::None => Ok(()),
         Action::ReloadData => {
             *ctx.data = UiData::load(&ctx.app.app_type)?;
+            ctx.app.maybe_prompt_import_candidate(ctx.data);
             Ok(())
         }
         Action::SetAppType(next) => {
             let next_data = UiData::load(&next)?;
             apply_preloaded_app_switch(ctx.app, ctx.data, next, next_data);
+            ctx.app.maybe_prompt_import_candidate(ctx.data);
             Ok(())
         }
         Action::LocalEnvRefresh => {
@@ -173,6 +175,7 @@ pub(crate) fn handle_action(
         }
         Action::SwitchRoute(route) => {
             ctx.app.route = route;
+            ctx.app.maybe_prompt_import_candidate(ctx.data);
             Ok(())
         }
         Action::Quit => {
@@ -253,6 +256,9 @@ pub(crate) fn handle_action(
         } => prompts::save(&mut ctx, old_id, new_id, name, description, content),
         Action::PromptDelete { id } => prompts::delete(&mut ctx, id),
         Action::PromptFormOpenExternal => prompts::open_form_external(&mut ctx),
+        Action::PromptOpenImportCandidate { filename, content } => {
+            prompts::open_import_candidate(&mut ctx, filename, content)
+        }
         Action::ConfigExport { path } => config::export(&mut ctx, path),
         Action::ConfigShowFull => config::show_full(&mut ctx),
         Action::ConfigImport { path } => config::import(&mut ctx, path),

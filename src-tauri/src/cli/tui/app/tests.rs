@@ -133,6 +133,16 @@ mod tests {
         }
     }
 
+    fn prompt_import_candidate(
+        filename: &str,
+        content: &str,
+    ) -> super::super::data::PromptImportCandidate {
+        super::super::data::PromptImportCandidate {
+            filename: filename.to_string(),
+            content: content.to_string(),
+        }
+    }
+
     fn nav_index(app: &App, item: NavItem) -> usize {
         app.nav_items()
             .iter()
@@ -2484,6 +2494,275 @@ mod tests {
 
         let action = app.on_key(key(KeyCode::Char('x')), &data);
         assert!(matches!(action, Action::None));
+    }
+
+    #[test]
+    fn prompts_route_prompts_once_when_empty_and_live_prompt_exists() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::default();
+        data.prompts.import_candidate =
+            Some(prompt_import_candidate("CLAUDE.md", "# Existing prompt"));
+
+        app.set_route_no_history(Route::Prompts);
+        app.maybe_prompt_import_candidate(&data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::PromptOpenImportCandidate { .. },
+                ..
+            })
+        ));
+
+        app.overlay = Overlay::None;
+        app.maybe_prompt_import_candidate(&data);
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "the import prompt should not repeat in the same TUI session after dismissal"
+        );
+    }
+
+    #[test]
+    fn prompts_import_prompt_no_dismisses_without_repeating() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::default();
+        data.prompts.import_candidate =
+            Some(prompt_import_candidate("CLAUDE.md", "# Existing prompt"));
+
+        app.set_route_no_history(Route::Prompts);
+        app.maybe_prompt_import_candidate(&data);
+
+        let action = app.on_key(key(KeyCode::Char('n')), &data);
+
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(app.form.is_none());
+
+        app.maybe_prompt_import_candidate(&data);
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "declining should suppress the import prompt for this app in the same TUI session"
+        );
+    }
+
+    #[test]
+    fn prompts_import_prompt_esc_dismisses_without_repeating() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::default();
+        data.prompts.import_candidate =
+            Some(prompt_import_candidate("CLAUDE.md", "# Existing prompt"));
+
+        app.set_route_no_history(Route::Prompts);
+        app.maybe_prompt_import_candidate(&data);
+
+        let action = app.on_key(key(KeyCode::Esc), &data);
+
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(app.form.is_none());
+
+        app.maybe_prompt_import_candidate(&data);
+        assert!(
+            matches!(app.overlay, Overlay::None),
+            "escaping should suppress the import prompt for this app in the same TUI session"
+        );
+    }
+
+    #[test]
+    fn prompts_import_prompt_is_tracked_per_app() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::default();
+        data.prompts.import_candidate =
+            Some(prompt_import_candidate("CLAUDE.md", "# Existing prompt"));
+
+        app.set_route_no_history(Route::Prompts);
+        app.maybe_prompt_import_candidate(&data);
+        app.overlay = Overlay::None;
+
+        app.app_type = AppType::Codex;
+        data.prompts.import_candidate = Some(prompt_import_candidate(
+            "AGENTS.md",
+            "# Existing codex prompt",
+        ));
+        app.maybe_prompt_import_candidate(&data);
+
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::PromptOpenImportCandidate { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn prompts_route_does_not_prompt_when_prompt_rows_exist() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::default();
+        data.prompts.import_candidate =
+            Some(prompt_import_candidate("CLAUDE.md", "# Existing prompt"));
+        data.prompts.rows.push(super::super::data::PromptRow {
+            id: "pr1".to_string(),
+            prompt: crate::prompt::Prompt {
+                id: "pr1".to_string(),
+                name: "My Prompt".to_string(),
+                content: "Hello".to_string(),
+                description: None,
+                enabled: false,
+                created_at: None,
+                updated_at: None,
+            },
+        });
+
+        app.set_route_no_history(Route::Prompts);
+        app.maybe_prompt_import_candidate(&data);
+
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(app.prompt_import_prompted_apps.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn prompts_route_detects_live_prompt_file_and_prompts_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_home(temp.path());
+        let prompt_path =
+            crate::prompt_files::prompt_file_path(&AppType::Claude).expect("prompt path");
+        std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
+            .expect("create prompt parent");
+        std::fs::write(&prompt_path, "# Existing prompt").expect("write prompt file");
+
+        let mut app = App::new(Some(AppType::Claude));
+        let mut data = UiData::load(&app.app_type).expect("load ui data");
+        let candidate = data
+            .prompts
+            .import_candidate
+            .as_ref()
+            .expect("import candidate");
+        assert_eq!(candidate.filename, "CLAUDE.md");
+        assert_eq!(candidate.content, "# Existing prompt");
+
+        run_runtime_action(&mut app, &mut data, Action::SwitchRoute(Route::Prompts))
+            .expect("switch to prompts");
+
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::PromptOpenImportCandidate { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn prompts_reload_data_detects_live_prompt_file_and_prompts_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_home(temp.path());
+        let prompt_path =
+            crate::prompt_files::prompt_file_path(&AppType::Claude).expect("prompt path");
+        std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
+            .expect("create prompt parent");
+        std::fs::write(&prompt_path, "# Existing prompt").expect("write prompt file");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Prompts;
+        app.focus = Focus::Content;
+        let mut data = UiData::default();
+
+        run_runtime_action(&mut app, &mut data, Action::ReloadData).expect("reload data");
+
+        assert_eq!(
+            data.prompts
+                .import_candidate
+                .as_ref()
+                .expect("import candidate")
+                .content,
+            "# Existing prompt"
+        );
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::PromptOpenImportCandidate { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn prompts_switch_app_detects_live_prompt_file_and_prompts_import() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_home(temp.path());
+        let prompt_path =
+            crate::prompt_files::prompt_file_path(&AppType::Codex).expect("prompt path");
+        std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
+            .expect("create prompt parent");
+        std::fs::write(&prompt_path, "# Codex prompt").expect("write prompt file");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Prompts;
+        app.focus = Focus::Content;
+        let mut data = UiData::load(&app.app_type).expect("load claude data");
+
+        run_runtime_action(&mut app, &mut data, Action::SetAppType(AppType::Codex))
+            .expect("switch app");
+
+        assert_eq!(app.app_type, AppType::Codex);
+        assert_eq!(
+            data.prompts
+                .import_candidate
+                .as_ref()
+                .expect("import candidate")
+                .filename,
+            "AGENTS.md"
+        );
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::PromptOpenImportCandidate { .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_config_migration_leaves_live_prompt_for_tui_import_prompt() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_home(temp.path());
+        let mut legacy_config = crate::app_config::MultiAppConfig::default();
+        legacy_config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager")
+            .providers
+            .insert(
+                "provider-one".to_string(),
+                claude_provider_row("provider-one").provider,
+            );
+        legacy_config.save().expect("write legacy config");
+        let prompt_path =
+            crate::prompt_files::prompt_file_path(&AppType::Claude).expect("prompt path");
+        std::fs::create_dir_all(prompt_path.parent().expect("prompt parent"))
+            .expect("create prompt parent");
+        std::fs::write(&prompt_path, "# Existing prompt").expect("write prompt file");
+
+        let state = crate::AppState::try_new().expect("migrate legacy config");
+
+        assert!(
+            PromptService::get_prompts(&state, AppType::Claude)
+                .expect("load prompts")
+                .is_empty(),
+            "legacy config migration must not silently import live prompt files"
+        );
+        let data = UiData::load(&AppType::Claude).expect("load ui data");
+        assert_eq!(
+            data.prompts
+                .import_candidate
+                .as_ref()
+                .expect("import candidate")
+                .content,
+            "# Existing prompt"
+        );
     }
 
     #[test]
@@ -8407,6 +8686,56 @@ mod tests {
             Some("Demo description")
         );
         assert_eq!(data.prompts.rows[0].prompt.content, "body");
+    }
+
+    #[test]
+    #[serial]
+    fn prompt_import_candidate_yes_opens_prefilled_add_form_without_saving() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_home(temp.path());
+        let state = crate::AppState::try_new().expect("load state");
+        state.save().expect("persist empty state");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Prompts;
+        app.focus = Focus::Content;
+        app.filter.active = true;
+        app.filter.input.set("old filter".to_string());
+        let mut data = UiData::load(&app.app_type).expect("load ui data");
+        data.prompts.import_candidate = Some(prompt_import_candidate(
+            "CLAUDE.md",
+            "# Existing prompt\n\nBody",
+        ));
+
+        run_runtime_action(
+            &mut app,
+            &mut data,
+            Action::PromptOpenImportCandidate {
+                filename: "CLAUDE.md".to_string(),
+                content: "# Existing prompt\n\nBody".to_string(),
+            },
+        )
+        .expect("open import candidate");
+
+        assert!(!app.filter.active);
+        assert!(app.filter.input.value.is_empty());
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(
+            PromptService::get_prompts(&state, AppType::Claude)
+                .expect("load prompts")
+                .len(),
+            0,
+            "opening the import candidate should not save until the user submits the add form"
+        );
+        assert!(matches!(
+            app.form,
+            Some(FormState::PromptMeta(ref form))
+                if matches!(form.mode, FormMode::Add)
+                    && form.id.value == "default-prompt"
+                    && form.name.value == "Default Prompt"
+                    && form.description.value == "Prefilled from existing CLAUDE.md"
+                    && form.content.text() == "# Existing prompt\n\nBody"
+        ));
     }
 
     #[test]

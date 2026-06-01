@@ -81,6 +81,21 @@ pub enum ProviderCommand {
         /// Provider ID to duplicate
         id: String,
     },
+    /// Import providers from the current live app config
+    ImportLive,
+    /// Remove a provider from additive live app config without deleting it
+    RemoveFromConfig {
+        /// Provider ID to remove from live config
+        id: String,
+    },
+    /// Set the default provider/model for apps that support it
+    SetDefault {
+        /// Provider ID to set as default
+        id: String,
+        /// OpenClaw model ID to set as primary; defaults to the first live model
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Test provider endpoint speed
     Speedtest {
         /// Provider ID to test
@@ -118,6 +133,11 @@ pub fn execute(cmd: ProviderCommand, app: Option<AppType>) -> Result<(), AppErro
         ProviderCommand::Edit { id } => edit_provider(app_type, &id),
         ProviderCommand::Delete { id } => delete_provider(app_type, &id),
         ProviderCommand::Duplicate { id } => duplicate_provider(app_type, &id),
+        ProviderCommand::ImportLive => import_live_config(app_type),
+        ProviderCommand::RemoveFromConfig { id } => remove_from_config(app_type, &id),
+        ProviderCommand::SetDefault { id, model } => {
+            set_default_provider(app_type, &id, model.as_deref())
+        }
         ProviderCommand::Speedtest { id } => provider_inspect::speedtest_provider(app_type, &id),
         ProviderCommand::StreamCheck { id } => {
             provider_inspect::stream_check_provider(app_type, &id)
@@ -453,6 +473,57 @@ fn duplicate_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
     println!(
         "{}",
         success(&texts::provider_duplicated_success(id, &duplicate.id))
+    );
+    Ok(())
+}
+
+fn import_live_config(app_type: AppType) -> Result<(), AppError> {
+    let state = get_state()?;
+    let imported = ProviderService::import_live_config(&state, app_type.clone())?;
+    if imported > 0 {
+        println!(
+            "{}",
+            success(&format!(
+                "✓ Imported {imported} provider(s) from {} live config",
+                app_type.as_str()
+            ))
+        );
+    } else {
+        println!(
+            "{}",
+            info(&format!(
+                "No providers imported from {} live config.",
+                app_type.as_str()
+            ))
+        );
+    }
+    Ok(())
+}
+
+fn remove_from_config(app_type: AppType, id: &str) -> Result<(), AppError> {
+    let state = get_state()?;
+    ProviderService::remove_from_live_config(&state, app_type.clone(), id)?;
+    println!(
+        "{}",
+        success(&format!(
+            "✓ Removed provider '{}' from {} live config",
+            id,
+            app_type.as_str()
+        ))
+    );
+    Ok(())
+}
+
+fn set_default_provider(app_type: AppType, id: &str, model: Option<&str>) -> Result<(), AppError> {
+    let state = get_state()?;
+    let default = ProviderService::set_default_model(&state, app_type.clone(), id, model)?;
+    println!(
+        "{}",
+        success(&format!(
+            "✓ Set '{}' as default for {}",
+            default,
+            app_type.as_str()
+        ))
     );
     Ok(())
 }

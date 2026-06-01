@@ -724,6 +724,69 @@ mod tests {
     }
 
     #[test]
+    fn parses_provider_import_live_subcommand() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "import-live"]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::ImportLive)) => {}
+            _ => panic!("expected provider import-live command"),
+        }
+    }
+
+    #[test]
+    fn parses_provider_remove_from_config_subcommand() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "remove-from-config", "demo"]);
+
+        match cli.command {
+            Some(Commands::Provider(
+                super::commands::provider::ProviderCommand::RemoveFromConfig { id },
+            )) => {
+                assert_eq!(id, "demo");
+            }
+            _ => panic!("expected provider remove-from-config command"),
+        }
+    }
+
+    #[test]
+    fn parses_provider_set_default_subcommand() {
+        let cli = Cli::parse_from(["cc-switch", "provider", "set-default", "demo"]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::SetDefault {
+                id,
+                model,
+            })) => {
+                assert_eq!(id, "demo");
+                assert_eq!(model, None);
+            }
+            _ => panic!("expected provider set-default command"),
+        }
+    }
+
+    #[test]
+    fn parses_provider_set_default_with_model_subcommand() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "provider",
+            "set-default",
+            "demo",
+            "--model",
+            "gpt-5.4",
+        ]);
+
+        match cli.command {
+            Some(Commands::Provider(super::commands::provider::ProviderCommand::SetDefault {
+                id,
+                model,
+            })) => {
+                assert_eq!(id, "demo");
+                assert_eq!(model.as_deref(), Some("gpt-5.4"));
+            }
+            _ => panic!("expected provider set-default command with model"),
+        }
+    }
+
+    #[test]
     fn parses_provider_export_subcommand() {
         let cli = Cli::parse_from(["cc-switch", "provider", "export", "demo"]);
 

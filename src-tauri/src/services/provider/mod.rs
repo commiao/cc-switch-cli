@@ -2060,6 +2060,16 @@ impl ProviderService {
             ));
         }
 
+        if matches!(app_type, AppType::OpenClaw)
+            && Self::openclaw_default_model_references_provider(provider_id)?
+        {
+            return Err(AppError::localized(
+                "provider.remove_from_config.openclaw_default",
+                "不能从配置中移除被当前默认模型引用的 OpenClaw 供应商",
+                "Cannot remove the OpenClaw provider referenced by the current default model from config",
+            ));
+        }
+
         let original = {
             let config = state.config.read().map_err(AppError::from)?;
             let manager = config
@@ -2133,6 +2143,111 @@ impl ProviderService {
         }
 
         Ok(())
+    }
+
+    pub fn import_live_config(state: &AppState, app_type: AppType) -> Result<usize, AppError> {
+        match app_type {
+            AppType::OpenCode => Self::import_opencode_providers_from_live(state),
+            AppType::OpenClaw => Self::import_openclaw_providers_from_live(state),
+            AppType::Hermes => Self::import_hermes_providers_from_live(state),
+            _ => Self::import_default_config(state, app_type).map(|imported| usize::from(imported)),
+        }
+    }
+
+    pub fn set_default_model(
+        state: &AppState,
+        app_type: AppType,
+        provider_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<String, AppError> {
+        match app_type {
+            AppType::Hermes => {
+                Self::switch(state, AppType::Hermes, provider_id)?;
+                Ok(provider_id.to_string())
+            }
+            AppType::OpenClaw => Self::set_openclaw_default_model(provider_id, model_id),
+            _ => Err(AppError::localized(
+                "provider.set_default_model.unsupported",
+                "只有 Hermes 和 OpenClaw 支持设置默认供应商/模型",
+                "Only Hermes and OpenClaw support setting a default provider/model",
+            )),
+        }
+    }
+
+    fn set_openclaw_default_model(
+        provider_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<String, AppError> {
+        let live_provider = crate::openclaw_config::get_providers()?
+            .remove(provider_id)
+            .ok_or_else(|| {
+                AppError::localized(
+                    "provider.set_default_model.openclaw_provider_missing",
+                    format!("请先将该 OpenClaw 供应商加入当前配置: {provider_id}"),
+                    format!(
+                        "Add this OpenClaw provider to the current config first: {provider_id}"
+                    ),
+                )
+            })?;
+        let ordered_model_ids = Self::openclaw_provider_model_ids(&live_provider);
+        if ordered_model_ids.is_empty() {
+            return Err(AppError::localized(
+                "provider.set_default_model.openclaw_no_models",
+                "该 OpenClaw 供应商在当前配置中没有可用模型",
+                "This OpenClaw provider has no models in the current config",
+            ));
+        }
+
+        let selected_model_id = match model_id {
+            Some(id) if ordered_model_ids.iter().any(|candidate| candidate == id) => id.to_string(),
+            Some(id) => {
+                return Err(AppError::localized(
+                    "provider.set_default_model.openclaw_model_missing",
+                    format!("该 OpenClaw 供应商在当前配置中没有模型: {id}"),
+                    format!(
+                        "This OpenClaw provider does not have model in the current config: {id}"
+                    ),
+                ));
+            }
+            None => ordered_model_ids[0].clone(),
+        };
+        let primary = format!("{provider_id}/{selected_model_id}");
+        let fallbacks = ordered_model_ids
+            .iter()
+            .filter(|candidate| *candidate != &selected_model_id)
+            .map(|candidate| format!("{provider_id}/{candidate}"))
+            .collect();
+        let model = crate::openclaw_config::OpenClawDefaultModel {
+            primary: primary.clone(),
+            fallbacks,
+            extra: crate::openclaw_config::get_default_model()?
+                .map(|existing| existing.extra)
+                .unwrap_or_default(),
+        };
+        crate::openclaw_config::set_default_model(&model)?;
+        Ok(primary)
+    }
+
+    fn openclaw_default_model_references_provider(provider_id: &str) -> Result<bool, AppError> {
+        Ok(
+            crate::openclaw_config::get_default_model()?.is_some_and(|model| {
+                model
+                    .primary
+                    .split_once('/')
+                    .is_some_and(|(default_provider_id, _)| default_provider_id == provider_id)
+            }),
+        )
+    }
+
+    fn openclaw_provider_model_ids(provider_value: &Value) -> Vec<String> {
+        provider_value
+            .get("models")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model.get("id").and_then(|value| value.as_str()))
+            .map(str::to_string)
+            .collect()
     }
 
     /// 将所有应用的当前供应商配置同步到 live 文件。

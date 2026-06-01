@@ -1,12 +1,13 @@
 use serde_json::json;
 use serial_test::serial;
 use std::collections::HashMap;
+use std::fs;
 use std::net::TcpListener;
 
 use cc_switch_lib::{
     get_claude_settings_path, get_codex_auth_path, get_codex_config_path, read_json_file,
-    write_codex_live_atomic, AppType, McpApps, McpServer, MultiAppConfig, Provider, ProviderMeta,
-    ProviderService,
+    update_settings, write_codex_live_atomic, AppSettings, AppType, McpApps, McpServer,
+    MultiAppConfig, Provider, ProviderMeta, ProviderService,
 };
 
 #[path = "support.rs"]
@@ -22,6 +23,30 @@ fn find_free_port() -> u16 {
         .local_addr()
         .expect("read local listener address")
         .port()
+}
+
+fn configure_live_dirs(
+    home: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let opencode_dir = home.join("opencode-live");
+    let hermes_dir = home.join("hermes-live");
+    let openclaw_dir = home.join("openclaw-live");
+    fs::create_dir_all(&opencode_dir).expect("create opencode live dir");
+    fs::create_dir_all(&hermes_dir).expect("create hermes live dir");
+    fs::create_dir_all(&openclaw_dir).expect("create openclaw live dir");
+    update_settings(AppSettings {
+        opencode_config_dir: Some(opencode_dir.display().to_string()),
+        hermes_config_dir: Some(hermes_dir.display().to_string()),
+        openclaw_config_dir: Some(openclaw_dir.display().to_string()),
+        ..Default::default()
+    })
+    .expect("configure live dirs");
+    (opencode_dir, hermes_dir, openclaw_dir)
+}
+
+fn provider_command(cmd: cc_switch_lib::cli::commands::provider::ProviderCommand, app: AppType) {
+    cc_switch_lib::cli::commands::provider::execute(cmd, Some(app))
+        .expect("provider command should succeed");
 }
 
 #[test]
@@ -545,6 +570,442 @@ fn provider_duplicate_missing_source_returns_error_without_creating_provider() {
         .expect("claude manager after failed duplicate")
         .providers
         .is_empty());
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_import_live_imports_additive_app_providers() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let (opencode_dir, hermes_dir, openclaw_dir) = configure_live_dirs(home);
+
+    fs::write(
+        opencode_dir.join("opencode.json"),
+        serde_json::to_string_pretty(&json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "open-live": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Open Live",
+                    "options": {
+                        "baseURL": "https://open.example/v1",
+                        "apiKey": "sk-open"
+                    },
+                    "models": {
+                        "open-model": { "name": "Open Model" }
+                    }
+                }
+            }
+        }))
+        .expect("serialize opencode live config"),
+    )
+    .expect("write opencode live config");
+    fs::write(
+        hermes_dir.join("config.yaml"),
+        r#"
+custom_providers:
+  - name: hermes-live
+    base_url: https://hermes.example/v1
+    api_key: sk-hermes
+    models:
+      hermes-model:
+        context_length: 200000
+model: {}
+"#,
+    )
+    .expect("write hermes live config");
+    fs::write(
+        openclaw_dir.join("openclaw.json"),
+        r#"
+{
+  models: {
+    mode: 'merge',
+    providers: {
+      'claw-live': {
+        api: 'openai-completions',
+        models: [{ id: 'claw-model', name: 'Claw Model' }],
+      },
+    },
+  },
+}
+"#,
+    )
+    .expect("write openclaw live config");
+
+    let state = state_from_config(MultiAppConfig::default());
+    state.save().expect("persist empty provider state");
+    drop(state);
+
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::ImportLive,
+        AppType::OpenCode,
+    );
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::ImportLive,
+        AppType::Hermes,
+    );
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::ImportLive,
+        AppType::OpenClaw,
+    );
+
+    let refreshed = cc_switch_lib::AppState::try_new().expect("reload provider state");
+    let config = refreshed.config.read().expect("lock provider state");
+    for (app_type, id) in [
+        (AppType::OpenCode, "open-live"),
+        (AppType::Hermes, "hermes-live"),
+        (AppType::OpenClaw, "claw-live"),
+    ] {
+        let provider = config
+            .get_manager(&app_type)
+            .and_then(|manager| manager.providers.get(id))
+            .unwrap_or_else(|| panic!("expected imported {id} provider"));
+        assert_eq!(
+            provider
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.live_config_managed),
+            Some(true),
+            "{id} should be marked live-config managed"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_remove_from_config_keeps_provider_saved() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let (opencode_dir, _, _) = configure_live_dirs(home);
+    let live_path = opencode_dir.join("opencode.json");
+    fs::write(
+        &live_path,
+        serde_json::to_string_pretty(&json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "toggle": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": "https://toggle.example/v1",
+                        "apiKey": "sk-toggle"
+                    },
+                    "models": {
+                        "toggle-model": { "name": "Toggle Model" }
+                    }
+                }
+            }
+        }))
+        .expect("serialize opencode live config"),
+    )
+    .expect("write opencode live config");
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::OpenCode)
+            .expect("opencode manager");
+        let mut provider = Provider::with_id(
+            "toggle".to_string(),
+            "Toggle".to_string(),
+            json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {
+                    "baseURL": "https://toggle.example/v1",
+                    "apiKey": "sk-toggle"
+                },
+                "models": {
+                    "toggle-model": { "name": "Toggle Model" }
+                }
+            }),
+            None,
+        );
+        provider.meta = Some(ProviderMeta {
+            live_config_managed: Some(true),
+            ..Default::default()
+        });
+        manager.providers.insert("toggle".to_string(), provider);
+    }
+    let state = state_from_config(config);
+    state.save().expect("persist opencode provider");
+    drop(state);
+
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::RemoveFromConfig {
+            id: "toggle".to_string(),
+        },
+        AppType::OpenCode,
+    );
+
+    let live: serde_json::Value = read_json_file(&live_path).expect("read opencode live config");
+    assert!(!live
+        .get("provider")
+        .and_then(|value| value.as_object())
+        .is_some_and(|providers| providers.contains_key("toggle")));
+
+    let refreshed = cc_switch_lib::AppState::try_new().expect("reload provider state");
+    let config = refreshed.config.read().expect("lock provider state");
+    let provider = config
+        .get_manager(&AppType::OpenCode)
+        .and_then(|manager| manager.providers.get("toggle"))
+        .expect("provider should remain saved after remove-from-config");
+    assert_eq!(
+        provider
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.live_config_managed),
+        Some(false)
+    );
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_remove_from_config_rejects_non_additive_apps() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    ensure_test_home();
+
+    let state = state_from_config(MultiAppConfig::default());
+    state.save().expect("persist empty provider state");
+    drop(state);
+
+    let err = cc_switch_lib::cli::commands::provider::execute(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::RemoveFromConfig {
+            id: "demo".to_string(),
+        },
+        Some(AppType::Claude),
+    )
+    .expect_err("non-additive remove-from-config should fail");
+    assert!(
+        err.to_string().contains("additive") || err.to_string().contains("累加"),
+        "{err}"
+    );
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_openclaw_remove_rejects_default_provider() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let (_, _, openclaw_dir) = configure_live_dirs(home);
+    let live_path = openclaw_dir.join("openclaw.json");
+    fs::write(
+        &live_path,
+        r#"
+{
+  models: {
+    mode: 'merge',
+    providers: {
+      p1: {
+        api: 'openai-completions',
+        models: [{ id: 'primary-model', name: 'Primary' }],
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      model: {
+        primary: 'p1/primary-model',
+      },
+    },
+  },
+}
+"#,
+    )
+    .expect("write openclaw live config");
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::OpenClaw)
+            .expect("openclaw manager");
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({
+                    "api": "openai-completions",
+                    "models": [{ "id": "primary-model", "name": "Primary" }]
+                }),
+                None,
+            ),
+        );
+    }
+    let state = state_from_config(config);
+    state.save().expect("persist openclaw provider");
+    drop(state);
+
+    let err = cc_switch_lib::cli::commands::provider::execute(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::RemoveFromConfig {
+            id: "p1".to_string(),
+        },
+        Some(AppType::OpenClaw),
+    )
+    .expect_err("default OpenClaw provider should not be removable");
+    assert!(err.to_string().contains("default") || err.to_string().contains("默认"));
+
+    let live_source = fs::read_to_string(&live_path).expect("read openclaw live config");
+    let live: serde_json::Value =
+        json5::from_str(&live_source).expect("parse openclaw live config");
+    assert!(live
+        .get("models")
+        .and_then(|models| models.get("providers"))
+        .and_then(|providers| providers.as_object())
+        .is_some_and(|providers| providers.contains_key("p1")));
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_openclaw_set_default_uses_live_order_and_preserves_extra() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let (_, _, openclaw_dir) = configure_live_dirs(home);
+    let live_path = openclaw_dir.join("openclaw.json");
+    fs::write(
+        &live_path,
+        r#"
+{
+  models: {
+    mode: 'merge',
+    providers: {
+      p1: {
+        api: 'openai-completions',
+        models: [
+          { id: 'live-primary', name: 'Live Primary' },
+          { id: 'snapshot-primary', name: 'Snapshot Primary' },
+          { id: 'fallback-two', name: 'Fallback Two' },
+        ],
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      model: {
+        primary: 'p1/snapshot-primary',
+        fallbacks: ['p1/live-primary'],
+        reasoningEffort: 'high',
+      },
+    },
+  },
+}
+"#,
+    )
+    .expect("write openclaw live config");
+    let state = state_from_config(MultiAppConfig::default());
+    state.save().expect("persist empty provider state");
+    drop(state);
+
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::SetDefault {
+            id: "p1".to_string(),
+            model: None,
+        },
+        AppType::OpenClaw,
+    );
+
+    let live_source = fs::read_to_string(&live_path).expect("read openclaw live config");
+    let live: serde_json::Value =
+        json5::from_str(&live_source).expect("parse openclaw live config");
+    let model = live
+        .get("agents")
+        .and_then(|agents| agents.get("defaults"))
+        .and_then(|defaults| defaults.get("model"))
+        .expect("default model should exist");
+    assert_eq!(
+        model.get("primary").and_then(|value| value.as_str()),
+        Some("p1/live-primary")
+    );
+    assert_eq!(
+        model
+            .get("fallbacks")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+            }),
+        Some(vec!["p1/snapshot-primary", "p1/fallback-two"])
+    );
+    assert_eq!(
+        model
+            .get("reasoningEffort")
+            .and_then(|value| value.as_str()),
+        Some("high")
+    );
+}
+
+#[test]
+#[serial]
+fn provider_live_config_cli_hermes_set_default_uses_switch_semantics() {
+    let _guard = lock_test_mutex();
+    reset_test_fs();
+    let home = ensure_test_home();
+    let (_, hermes_dir, _) = configure_live_dirs(home);
+    let live_path = hermes_dir.join("config.yaml");
+    fs::write(&live_path, "custom_providers: []\nmodel: {}\n").expect("write hermes live config");
+
+    let mut config = MultiAppConfig::default();
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Hermes)
+            .expect("hermes manager");
+        manager.providers.insert(
+            "p1".to_string(),
+            Provider::with_id(
+                "p1".to_string(),
+                "Hermes Provider".to_string(),
+                json!({
+                    "base_url": "https://hermes.example/v1",
+                    "api_key": "sk-hermes",
+                    "models": [{ "id": "hermes-model", "name": "Hermes Model" }]
+                }),
+                None,
+            ),
+        );
+    }
+    let state = state_from_config(config);
+    state.save().expect("persist hermes provider");
+    drop(state);
+
+    provider_command(
+        cc_switch_lib::cli::commands::provider::ProviderCommand::SetDefault {
+            id: "p1".to_string(),
+            model: None,
+        },
+        AppType::Hermes,
+    );
+
+    let live_source = fs::read_to_string(&live_path).expect("read hermes live config");
+    let live: serde_yaml::Value = serde_yaml::from_str(&live_source).expect("parse hermes yaml");
+    assert_eq!(
+        live.get("model")
+            .and_then(|model| model.get("provider"))
+            .and_then(|value| value.as_str()),
+        Some("p1")
+    );
+    assert!(live
+        .get("custom_providers")
+        .and_then(|providers| providers.as_sequence())
+        .is_some_and(|providers| {
+            providers.iter().any(|provider| {
+                provider
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|name| name == "p1")
+            })
+        }));
+
+    let refreshed = cc_switch_lib::AppState::try_new().expect("reload provider state");
+    assert_eq!(
+        ProviderService::current(&refreshed, AppType::Hermes)
+            .expect("read hermes current provider"),
+        "p1"
+    );
 }
 
 #[test]

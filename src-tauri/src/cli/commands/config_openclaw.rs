@@ -137,6 +137,15 @@ pub enum OpenClawRuleListCommand {
     Add { rule: String },
     /// Remove a rule by exact value
     Remove { rule: String },
+    /// Set a rule by 1-based list index
+    #[command(name = "set-at")]
+    SetAt { index: usize, rule: String },
+    /// Insert a rule before a 1-based list index; use len+1 to append
+    #[command(name = "insert-at")]
+    InsertAt { index: usize, rule: String },
+    /// Remove one rule by 1-based list index
+    #[command(name = "remove-at")]
+    RemoveAt { index: usize },
     /// Clear all rules
     Clear,
 }
@@ -181,6 +190,15 @@ pub enum OpenClawFallbackCommand {
     Add { model: String },
     /// Remove a fallback model by exact value
     Remove { model: String },
+    /// Set a fallback model by 1-based list index
+    #[command(name = "set-at")]
+    SetAt { index: usize, model: String },
+    /// Insert a fallback model before a 1-based list index; use len+1 to append
+    #[command(name = "insert-at")]
+    InsertAt { index: usize, model: String },
+    /// Remove one fallback model by 1-based list index
+    #[command(name = "remove-at")]
+    RemoveAt { index: usize },
     /// Clear all fallback models
     Clear,
 }
@@ -613,6 +631,9 @@ fn execute_rule_list(kind: ToolsRuleKind, cmd: OpenClawRuleListCommand) -> Resul
         OpenClawRuleListCommand::List { json } => list_rules(kind, json),
         OpenClawRuleListCommand::Add { rule } => add_rule(kind, &rule),
         OpenClawRuleListCommand::Remove { rule } => remove_rule(kind, &rule),
+        OpenClawRuleListCommand::SetAt { index, rule } => set_rule_at(kind, index, &rule),
+        OpenClawRuleListCommand::InsertAt { index, rule } => insert_rule_at(kind, index, &rule),
+        OpenClawRuleListCommand::RemoveAt { index } => remove_rule_at(kind, index),
         OpenClawRuleListCommand::Clear => clear_rules(kind),
     }
 }
@@ -623,7 +644,7 @@ fn list_rules(kind: ToolsRuleKind, json: bool) -> Result<(), AppError> {
     if json {
         print_json(rules)?;
     } else {
-        print_string_list(rule_label(kind), rules);
+        print_indexed_string_list(rule_label(kind), rules);
     }
     Ok(())
 }
@@ -642,6 +663,45 @@ fn remove_rule(kind: ToolsRuleKind, rule: &str) -> Result<(), AppError> {
     let rule = non_empty("rule", rule)?;
     let mut tools = get_tools_config()?;
     rule_list_mut(&mut tools, kind).retain(|value| value != rule);
+    let tools = normalize_tools_config(&tools);
+    let outcome = set_tools_config(&tools)?;
+    print_write_outcome("OpenClaw tools config saved.", &outcome);
+    Ok(())
+}
+
+fn set_rule_at(kind: ToolsRuleKind, index: usize, rule: &str) -> Result<(), AppError> {
+    let rule = non_empty("rule", rule)?.to_string();
+    let mut tools = get_tools_config()?;
+    set_list_item_at(
+        rule_list_mut(&mut tools, kind),
+        index,
+        rule,
+        rule_label(kind),
+    )?;
+    let tools = normalize_tools_config(&tools);
+    let outcome = set_tools_config(&tools)?;
+    print_write_outcome("OpenClaw tools config saved.", &outcome);
+    Ok(())
+}
+
+fn insert_rule_at(kind: ToolsRuleKind, index: usize, rule: &str) -> Result<(), AppError> {
+    let rule = non_empty("rule", rule)?.to_string();
+    let mut tools = get_tools_config()?;
+    insert_list_item_at(
+        rule_list_mut(&mut tools, kind),
+        index,
+        rule,
+        rule_label(kind),
+    )?;
+    let tools = normalize_tools_config(&tools);
+    let outcome = set_tools_config(&tools)?;
+    print_write_outcome("OpenClaw tools config saved.", &outcome);
+    Ok(())
+}
+
+fn remove_rule_at(kind: ToolsRuleKind, index: usize) -> Result<(), AppError> {
+    let mut tools = get_tools_config()?;
+    remove_list_item_at(rule_list_mut(&mut tools, kind), index, rule_label(kind))?;
     let tools = normalize_tools_config(&tools);
     let outcome = set_tools_config(&tools)?;
     print_write_outcome("OpenClaw tools config saved.", &outcome);
@@ -742,6 +802,9 @@ fn execute_fallback(cmd: OpenClawFallbackCommand) -> Result<(), AppError> {
         OpenClawFallbackCommand::List { json } => list_fallbacks(json),
         OpenClawFallbackCommand::Add { model } => add_fallback(&model),
         OpenClawFallbackCommand::Remove { model } => remove_fallback(&model),
+        OpenClawFallbackCommand::SetAt { index, model } => set_fallback_at(index, &model),
+        OpenClawFallbackCommand::InsertAt { index, model } => insert_fallback_at(index, &model),
+        OpenClawFallbackCommand::RemoveAt { index } => remove_fallback_at(index),
         OpenClawFallbackCommand::Clear => clear_fallbacks(),
     }
 }
@@ -752,7 +815,7 @@ fn list_fallbacks(json: bool) -> Result<(), AppError> {
     if json {
         print_json(&form.fallbacks)?;
     } else {
-        print_string_list("Fallbacks", &form.fallbacks);
+        print_indexed_string_list("Fallbacks", &form.fallbacks);
     }
     Ok(())
 }
@@ -770,6 +833,29 @@ fn remove_fallback(model: &str) -> Result<(), AppError> {
     let defaults = get_agents_defaults()?;
     let mut form = OpenClawAgentsFormLike::from_snapshot(defaults.as_ref());
     form.fallbacks.retain(|value| value != model);
+    save_agents_form(form)
+}
+
+fn set_fallback_at(index: usize, model: &str) -> Result<(), AppError> {
+    let model = non_empty("model", model)?.to_string();
+    let defaults = get_agents_defaults()?;
+    let mut form = OpenClawAgentsFormLike::from_snapshot(defaults.as_ref());
+    set_list_item_at(&mut form.fallbacks, index, model, "Fallbacks")?;
+    save_agents_form(form)
+}
+
+fn insert_fallback_at(index: usize, model: &str) -> Result<(), AppError> {
+    let model = non_empty("model", model)?.to_string();
+    let defaults = get_agents_defaults()?;
+    let mut form = OpenClawAgentsFormLike::from_snapshot(defaults.as_ref());
+    insert_list_item_at(&mut form.fallbacks, index, model, "Fallbacks")?;
+    save_agents_form(form)
+}
+
+fn remove_fallback_at(index: usize) -> Result<(), AppError> {
+    let defaults = get_agents_defaults()?;
+    let mut form = OpenClawAgentsFormLike::from_snapshot(defaults.as_ref());
+    remove_list_item_at(&mut form.fallbacks, index, "Fallbacks")?;
     save_agents_form(form)
 }
 
@@ -1036,6 +1122,65 @@ fn non_empty<'a>(label: &str, value: &'a str) -> Result<&'a str, AppError> {
     }
 }
 
+fn set_list_item_at(
+    values: &mut [String],
+    index: usize,
+    value: String,
+    label: &str,
+) -> Result<(), AppError> {
+    let offset = existing_list_offset(values.len(), index, label)?;
+    values[offset] = value;
+    Ok(())
+}
+
+fn insert_list_item_at(
+    values: &mut Vec<String>,
+    index: usize,
+    value: String,
+    label: &str,
+) -> Result<(), AppError> {
+    let offset = insert_list_offset(values.len(), index, label)?;
+    values.insert(offset, value);
+    Ok(())
+}
+
+fn remove_list_item_at(
+    values: &mut Vec<String>,
+    index: usize,
+    label: &str,
+) -> Result<(), AppError> {
+    let offset = existing_list_offset(values.len(), index, label)?;
+    values.remove(offset);
+    Ok(())
+}
+
+fn existing_list_offset(len: usize, index: usize, label: &str) -> Result<usize, AppError> {
+    if index == 0 || index > len {
+        return Err(list_index_error(label, index, len, false));
+    }
+    Ok(index - 1)
+}
+
+fn insert_list_offset(len: usize, index: usize, label: &str) -> Result<usize, AppError> {
+    if index == 0 || index > len + 1 {
+        return Err(list_index_error(label, index, len, true));
+    }
+    Ok(index - 1)
+}
+
+fn list_index_error(label: &str, index: usize, len: usize, insert: bool) -> AppError {
+    let max = if insert { len + 1 } else { len };
+    if max == 0 {
+        AppError::InvalidInput(format!(
+            "{label} index {index} is out of range; list is empty."
+        ))
+    } else {
+        AppError::InvalidInput(format!(
+            "{label} index {index} is out of range; expected 1..={max}."
+        ))
+    }
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), AppError> {
     println!(
         "{}",
@@ -1053,6 +1198,18 @@ fn print_string_list(label: &str, values: &[String]) {
     println!("{label}:");
     for value in values {
         println!("  - {value}");
+    }
+}
+
+fn print_indexed_string_list(label: &str, values: &[String]) {
+    if values.is_empty() {
+        println!("{label}: N/A");
+        return;
+    }
+
+    println!("{label}:");
+    for (index, value) in values.iter().enumerate() {
+        println!("  {}. {value}", index + 1);
     }
 }
 
@@ -1203,6 +1360,43 @@ mod tests {
     }
 
     #[test]
+    fn config_openclaw_tools_rule_position_commands_edit_one_row() {
+        let _env = EnvGuard::new();
+
+        set_tools(JsonInputArgs {
+            json: Some(r#"{"allow":[" Read ","Read","Write"],"deny":[" Bash(rm*) "]}"#.to_string()),
+            file: None,
+        })
+        .expect("seed tools");
+
+        remove_rule_at(ToolsRuleKind::Allow, 2).expect("remove one duplicate by index");
+        insert_rule_at(ToolsRuleKind::Allow, 2, " Edit ").expect("insert by index");
+        set_rule_at(ToolsRuleKind::Deny, 1, " Bash(ls*) ").expect("set deny by index");
+
+        let tools = get_tools_config().expect("load tools");
+        assert_eq!(tools.allow, vec!["Read", "Edit", "Write"]);
+        assert_eq!(tools.deny, vec!["Bash(ls*)"]);
+    }
+
+    #[test]
+    fn config_openclaw_list_position_commands_reject_out_of_range_indexes() {
+        let _env = EnvGuard::new();
+
+        set_tools(JsonInputArgs {
+            json: Some(r#"{"allow":["Read"]}"#.to_string()),
+            file: None,
+        })
+        .expect("seed tools");
+
+        let zero = remove_rule_at(ToolsRuleKind::Allow, 0).expect_err("index is 1-based");
+        assert!(zero.to_string().contains("expected 1..=1"));
+
+        let too_large = insert_rule_at(ToolsRuleKind::Allow, 3, "Write")
+            .expect_err("insert index only allows len+1");
+        assert!(too_large.to_string().contains("expected 1..=2"));
+    }
+
+    #[test]
     fn config_openclaw_health_reports_typed_slice_parse_warnings() {
         let _env = EnvGuard::new();
         crate::openclaw_config::write_openclaw_config_source(
@@ -1287,6 +1481,31 @@ mod tests {
             Some(&json!("manual-value"))
         );
         assert!(!defaults.extra.contains_key("timeout"));
+    }
+
+    #[test]
+    fn config_openclaw_agents_fallback_position_commands_edit_one_row() {
+        let _env = EnvGuard::new();
+
+        set_agents(JsonInputArgs {
+            json: Some(
+                r#"{"model":{"primary":"demo/primary","fallbacks":["demo/a","demo/a","demo/c"]}}"#
+                    .to_string(),
+            ),
+            file: None,
+        })
+        .expect("seed agents");
+
+        remove_fallback_at(2).expect("remove one duplicate by index");
+        insert_fallback_at(2, " demo/b ").expect("insert by index");
+        set_fallback_at(3, " demo/d ").expect("set by index");
+
+        let defaults = get_agents_defaults()
+            .expect("load agents defaults")
+            .expect("agents defaults should exist");
+        let model = defaults.model.expect("model defaults should exist");
+        assert_eq!(model.primary, "demo/primary");
+        assert_eq!(model.fallbacks, vec!["demo/a", "demo/b", "demo/d"]);
     }
 
     #[test]

@@ -1233,6 +1233,65 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_openclaw_tools_allow_set_at_subcommand() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "config",
+            "openclaw",
+            "tools",
+            "allow",
+            "set-at",
+            "2",
+            "Edit",
+        ]);
+
+        match cli.command {
+            Some(Commands::Config(super::commands::config::ConfigCommand::OpenClaw(
+                super::commands::config_openclaw::OpenClawCommand::Tools(
+                    super::commands::config_openclaw::OpenClawToolsCommand::Allow(
+                        super::commands::config_openclaw::OpenClawRuleListCommand::SetAt {
+                            index,
+                            rule,
+                        },
+                    ),
+                ),
+            ))) => {
+                assert_eq!(index, 2);
+                assert_eq!(rule, "Edit");
+            }
+            _ => panic!("expected config openclaw tools allow set-at command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_openclaw_agents_fallback_remove_at_subcommand() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "config",
+            "openclaw",
+            "agents",
+            "fallback",
+            "remove-at",
+            "3",
+        ]);
+
+        match cli.command {
+            Some(Commands::Config(super::commands::config::ConfigCommand::OpenClaw(
+                super::commands::config_openclaw::OpenClawCommand::Agents(
+                    super::commands::config_openclaw::OpenClawAgentsCommand::Fallback(
+                        super::commands::config_openclaw::OpenClawFallbackCommand::RemoveAt {
+                            index,
+                        },
+                    ),
+                ),
+            ))) => {
+                assert_eq!(index, 3);
+            }
+            _ => panic!("expected config openclaw agents fallback remove-at command"),
+        }
+    }
+
+    #[test]
     fn parses_config_openclaw_agents_runtime_set_subcommand() {
         let cli = Cli::parse_from([
             "cc-switch",

@@ -262,6 +262,46 @@ mod tests {
     }
 
     #[test]
+    fn parses_update_check_json_flags() {
+        let cli = Cli::parse_from(["cc-switch", "update", "--check", "--json"]);
+
+        match cli.command {
+            Some(Commands::Update(update)) => {
+                assert!(update.check);
+                assert!(update.json);
+                assert_eq!(update.version, None);
+            }
+            _ => panic!("expected update command"),
+        }
+    }
+
+    #[test]
+    fn update_check_conflicts_with_explicit_version() {
+        let err = match Cli::try_parse_from([
+            "cc-switch",
+            "update",
+            "--check",
+            "--version",
+            "v999.0.0",
+        ]) {
+            Ok(_) => panic!("update --check should reject --version"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn update_json_requires_check() {
+        let err = match Cli::try_parse_from(["cc-switch", "update", "--json"]) {
+            Ok(_) => panic!("update --json should require --check"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn parses_settings_visible_apps_enable_subcommand() {
         let cli = Cli::parse_from(["cc-switch", "settings", "visible-apps", "enable", "gemini"]);
 

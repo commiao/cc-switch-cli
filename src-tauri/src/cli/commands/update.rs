@@ -3,7 +3,7 @@ use clap::Args;
 use flate2::read::GzDecoder;
 use minisign_verify::{PublicKey, Signature};
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,7 +14,7 @@ use tar::Archive;
 use tempfile::TempDir;
 use url::Url;
 
-use crate::cli::ui::{highlight, info, success, warning};
+use crate::cli::ui::{highlight, info, success, to_json, warning};
 use crate::error::AppError;
 
 const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -34,8 +34,16 @@ const USER_AGENT: &str = concat!(
 #[derive(Args, Debug, Clone)]
 pub struct UpdateCommand {
     /// Target version (example: v4.6.2). Defaults to latest release.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "check")]
     pub version: Option<String>,
+
+    /// Only check for updates; do not download or replace the binary.
+    #[arg(long)]
+    pub check: bool,
+
+    /// Print machine-readable JSON for --check.
+    #[arg(long, requires = "check")]
+    pub json: bool,
 }
 
 struct DownloadedAsset {
@@ -133,6 +141,10 @@ pub fn execute(cmd: UpdateCommand) -> Result<(), AppError> {
 }
 
 async fn execute_async(cmd: UpdateCommand) -> Result<(), AppError> {
+    if cmd.check {
+        return check_only(cmd.json).await;
+    }
+
     let current_version = env!("CARGO_PKG_VERSION");
     let explicit_version = cmd.version.as_deref().is_some_and(|v| !v.trim().is_empty());
     let is_homebrew_managed = is_homebrew_install();
@@ -255,6 +267,64 @@ async fn execute_async(cmd: UpdateCommand) -> Result<(), AppError> {
             "If you want to install or refresh managed bash/zsh completions, run: `cc-switch completions install`."
         )
     );
+    Ok(())
+}
+
+async fn check_only(json: bool) -> Result<(), AppError> {
+    let info = check_for_update().await?;
+    print_update_check_info(&info, json)
+}
+
+fn print_update_check_info(
+    update_info: &UpdateCheckInfo,
+    json_output: bool,
+) -> Result<(), AppError> {
+    if json_output {
+        println!(
+            "{}",
+            to_json(update_info).map_err(|source| AppError::JsonSerialize { source })?
+        );
+        return Ok(());
+    }
+
+    if update_info.is_already_latest {
+        println!(
+            "{}",
+            success(&format!(
+                "Already on latest version: v{}",
+                update_info.current_version
+            ))
+        );
+    } else if update_info.is_homebrew_managed {
+        println!(
+            "{}",
+            warning(&format!(
+                "Update {} is available (current v{}).\nPlease update with: brew upgrade cc-switch",
+                update_info.target_tag, update_info.current_version
+            ))
+        );
+    } else if update_info.is_downgrade {
+        println!(
+            "{}",
+            info(&format!(
+                "Current version v{} is newer than target {}; skipping automatic downgrade. Use `cc-switch update --version {}` to force.",
+                update_info.current_version, update_info.target_tag, update_info.target_tag
+            ))
+        );
+    } else {
+        println!(
+            "{}",
+            success(&format!(
+                "Update {} is available (current v{}).",
+                update_info.target_tag, update_info.current_version
+            ))
+        );
+        println!(
+            "{}",
+            info("Run `cc-switch update` to download and apply it.")
+        );
+    }
+
     Ok(())
 }
 
@@ -1301,6 +1371,8 @@ fn map_update_permission_error(target: &Path, err: std::io::Error) -> AppError {
     AppError::io(target, err)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateCheckInfo {
     pub current_version: String,
     pub target_tag: String,

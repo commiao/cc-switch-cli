@@ -51,6 +51,8 @@ async fn cli_explicit_update_exits_early_for_homebrew_install() {
 
     execute_async(UpdateCommand {
         version: Some("v999.0.0".to_string()),
+        check: false,
+        json: false,
     })
     .await
     .expect("homebrew-managed explicit CLI update should exit without querying releases");
@@ -112,6 +114,18 @@ fn non_homebrew_update_check_marks_newer_version_as_regular_update() {
     assert!(!info.is_already_latest);
     assert!(!info.is_downgrade);
     assert!(!info.is_homebrew_managed);
+}
+
+#[test]
+fn update_check_info_json_uses_cli_field_names() {
+    let info = build_update_check_info("1.2.3", "v1.2.4".to_string(), false);
+    let value = serde_json::to_value(&info).expect("serialize update check info");
+
+    assert_eq!(value["currentVersion"], "1.2.3");
+    assert_eq!(value["targetTag"], "v1.2.4");
+    assert_eq!(value["isAlreadyLatest"], false);
+    assert_eq!(value["isDowngrade"], false);
+    assert_eq!(value["isHomebrewManaged"], false);
 }
 
 #[cfg(not(windows))]

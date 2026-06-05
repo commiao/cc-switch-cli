@@ -5,8 +5,8 @@ use ratatui::{
     symbols,
     text::{Line, Span},
     widgets::{
-        Axis, Block, BorderType, Borders, Cell, Chart, Clear, Dataset, Gauge, GraphType, List,
-        ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+        Axis, Block, BorderType, Borders, Cell, Chart, Clear, Dataset, Gauge, GraphType, LineGauge,
+        List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
     },
     Frame,
 };

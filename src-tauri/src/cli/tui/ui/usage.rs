@@ -1,6 +1,6 @@
 use crate::cli::tui::app::{UsageMetric, UsagePane};
 use crate::cli::tui::data::{
-    UsageLogRow, UsageModelStatsRow, UsageProviderStatsRow, UsageTrendBucket,
+    UsageLogRow, UsageModelStatsRow, UsageProviderStatsRow, UsageSummarySnapshot, UsageTrendBucket,
 };
 
 use super::*;
@@ -149,132 +149,86 @@ fn render_usage_metrics(
     theme: &super::theme::Theme,
 ) {
     let summary = data.usage.summary_for(app.usage.range);
+    if area.width < 16 || area.height == 0 {
+        return;
+    }
+
+    if area.width < 36 || area.height < 4 {
+        render_usage_metrics_untitled_compact(frame, summary, area, theme);
+        return;
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(theme.dim))
         .title(format!(" {} ", usage_text("Overview", "概览")));
-    frame.render_widget(block.clone(), area);
-    let inner = inset_left(block.inner(area), CONTENT_INSET_LEFT);
-
-    if inner.width < 92 || inner.height < 5 {
-        let lines = vec![
-            Line::from(vec![
-                Span::styled(usage_text("Cost ", "费用 "), Style::default().fg(theme.dim)),
-                Span::styled(
-                    format_money(summary.total_cost_usd),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    usage_text("Tokens ", "Token "),
-                    Style::default().fg(theme.dim),
-                ),
-                Span::styled(
-                    format_token_compact(summary.total_tokens()),
-                    Style::default().fg(theme.ok).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(usage_text("Req ", "请求 "), Style::default().fg(theme.dim)),
-                Span::styled(
-                    summary.total_requests.to_string(),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    usage_text("Success ", "成功率 "),
-                    Style::default().fg(theme.dim),
-                ),
-                Span::styled(
-                    format_percent(summary.success_rate()),
-                    success_rate_style(summary.success_rate(), theme).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    usage_text("Latency ", "延迟 "),
-                    Style::default().fg(theme.dim),
-                ),
-                Span::styled(
-                    format_ms(summary.avg_latency_ms),
-                    Style::default()
-                        .fg(theme.comment)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(usage_text("TTFT ", "首字 "), Style::default().fg(theme.dim)),
-                Span::styled(
-                    format_ms(summary.avg_first_token_ms),
-                    Style::default()
-                        .fg(theme.comment)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    usage_text("Cache ", "缓存 "),
-                    Style::default().fg(theme.dim),
-                ),
-                Span::styled(
-                    format_percent(summary.cache_hit_rate()),
-                    Style::default()
-                        .fg(theme.comment)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    let block_inner = block.inner(area);
+    let inner = inset_left(block_inner, CONTENT_INSET_LEFT);
+    if inner.width < 20 || inner.height == 0 {
+        render_usage_metrics_untitled_compact(frame, summary, area, theme);
         return;
     }
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3)])
-        .split(inner);
+    frame.render_widget(block.clone(), area);
 
-    let primary = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(rows[0]);
-    let secondary = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-        ])
-        .split(rows[1]);
+    if inner.height < 4 {
+        render_usage_metrics_compact(frame, summary, inner, theme);
+        return;
+    }
 
-    let token_breakdown = format!(
-        "{} / {}",
-        format_token_compact(summary.input_tokens),
-        format_token_compact(summary.output_tokens)
+    let rows = if inner.width >= 76 && inner.height >= 7 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(1),
+            ])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Min(1)])
+            .split(inner)
+    };
+
+    render_usage_metric_row(
+        frame,
+        rows[0],
+        &usage_primary_metrics(summary, theme),
+        theme,
     );
-    let cache_tokens = summary
-        .cache_read_tokens
-        .saturating_add(summary.cache_creation_tokens);
 
-    let primary_metrics = [
+    if rows.len() == 3 {
+        render_usage_metric_row(
+            frame,
+            rows[1],
+            &usage_secondary_metrics(summary, theme),
+            theme,
+        );
+        render_usage_cache_hit_line(frame, summary, rows[2], theme);
+    } else {
+        render_usage_cache_hit_line(frame, summary, rows[1], theme);
+    }
+}
+
+struct UsageMetricCard {
+    label: &'static str,
+    value: String,
+    meta: String,
+    value_style: Style,
+}
+
+fn usage_primary_metrics(
+    summary: &UsageSummarySnapshot,
+    theme: &super::theme::Theme,
+) -> [UsageMetricCard; 4] {
+    [
         UsageMetricCard {
-            label: usage_text("Cost", "费用"),
-            value: format_money(summary.total_cost_usd),
-            meta: usage_text("selected range", "当前范围").to_string(),
-            value_style: Style::default().fg(theme.accent),
-        },
-        UsageMetricCard {
-            label: usage_text("Tokens", "Token"),
+            label: usage_text("Real Tokens", "真实 Token"),
             value: format_token_compact(summary.total_tokens()),
-            meta: token_breakdown,
+            meta: usage_text("input + output + cache", "输入 + 输出 + 缓存").to_string(),
             value_style: Style::default().fg(theme.ok),
         },
         UsageMetricCard {
@@ -288,17 +242,25 @@ fn render_usage_metrics(
             value_style: Style::default().fg(Color::White),
         },
         UsageMetricCard {
+            label: usage_text("Cost", "费用"),
+            value: format_money(summary.total_cost_usd),
+            meta: usage_text("selected range", "当前范围").to_string(),
+            value_style: Style::default().fg(theme.accent),
+        },
+        UsageMetricCard {
             label: usage_text("Success", "成功率"),
             value: format_percent(summary.success_rate()),
             meta: usage_text("healthy responses", "健康响应").to_string(),
             value_style: success_rate_style(summary.success_rate(), theme),
         },
-    ];
-    for (idx, card) in primary_metrics.iter().enumerate() {
-        render_usage_metric_card(frame, primary[idx], card, theme);
-    }
+    ]
+}
 
-    let secondary_metrics = [
+fn usage_secondary_metrics(
+    summary: &UsageSummarySnapshot,
+    theme: &super::theme::Theme,
+) -> [UsageMetricCard; 4] {
+    [
         UsageMetricCard {
             label: usage_text("Input / Output", "输入 / 输出"),
             value: format!(
@@ -310,38 +272,53 @@ fn render_usage_metrics(
             value_style: Style::default().fg(theme.cyan),
         },
         UsageMetricCard {
-            label: usage_text("Cache", "缓存"),
-            value: format_percent(summary.cache_hit_rate()),
-            meta: format!(
-                "{} {}",
-                format_token_compact(cache_tokens),
-                usage_text("tokens", "Token")
-            ),
+            label: usage_text("Cache Read", "缓存读取"),
+            value: format_token_compact(summary.cache_read_tokens),
+            meta: usage_text("reused tokens", "复用 Token").to_string(),
+            value_style: Style::default().fg(theme.comment),
+        },
+        UsageMetricCard {
+            label: usage_text("Cache Write", "缓存写入"),
+            value: format_token_compact(summary.cache_creation_tokens),
+            meta: usage_text("created tokens", "写入 Token").to_string(),
             value_style: Style::default().fg(theme.comment),
         },
         UsageMetricCard {
             label: usage_text("Latency", "延迟"),
             value: format_ms(summary.avg_latency_ms),
-            meta: usage_text("average", "平均").to_string(),
+            meta: format!(
+                "{} {}",
+                usage_text("TTFT", "首字"),
+                format_ms(summary.avg_first_token_ms)
+            ),
             value_style: Style::default().fg(theme.comment),
         },
-        UsageMetricCard {
-            label: usage_text("TTFT", "首字"),
-            value: format_ms(summary.avg_first_token_ms),
-            meta: usage_text("first token", "首字延迟").to_string(),
-            value_style: Style::default().fg(theme.comment),
-        },
-    ];
-    for (idx, card) in secondary_metrics.iter().enumerate() {
-        render_usage_metric_card(frame, secondary[idx], card, theme);
-    }
+    ]
 }
 
-struct UsageMetricCard {
-    label: &'static str,
-    value: String,
-    meta: String,
-    value_style: Style,
+fn render_usage_metric_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cards: &[UsageMetricCard; 4],
+    theme: &super::theme::Theme,
+) {
+    if area.width < 20 || area.height < 2 {
+        return;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+        ])
+        .split(area);
+
+    for (idx, card) in cards.iter().enumerate() {
+        render_usage_metric_card(frame, columns[idx], card, theme);
+    }
 }
 
 fn render_usage_metric_card(
@@ -372,6 +349,187 @@ fn render_usage_metric_card(
         ),
     ];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+fn render_usage_metrics_compact(
+    frame: &mut Frame<'_>,
+    summary: &UsageSummarySnapshot,
+    area: Rect,
+    theme: &super::theme::Theme,
+) {
+    if area.height == 0 {
+        return;
+    }
+
+    if area.height == 1 || area.width < 40 {
+        frame.render_widget(
+            Paragraph::new(usage_metrics_primary_compact_line(summary, theme))
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new(usage_metrics_primary_compact_line(summary, theme))
+            .wrap(Wrap { trim: true }),
+        rows[0],
+    );
+    render_usage_cache_hit_line(frame, summary, rows[1], theme);
+}
+
+fn render_usage_metrics_untitled_compact(
+    frame: &mut Frame<'_>,
+    summary: &UsageSummarySnapshot,
+    area: Rect,
+    theme: &super::theme::Theme,
+) {
+    if area.height == 0 {
+        return;
+    }
+
+    let mut lines = vec![usage_metrics_primary_compact_line(summary, theme)];
+    if area.height > 1 {
+        lines.push(usage_cache_hit_compact_line(summary, theme));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn usage_metrics_primary_compact_line(
+    summary: &UsageSummarySnapshot,
+    theme: &super::theme::Theme,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            usage_text("Tokens ", "Token "),
+            Style::default().fg(theme.dim),
+        ),
+        Span::styled(
+            format_token_compact(summary.total_tokens()),
+            Style::default().fg(theme.ok).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(usage_text("Req ", "请求 "), Style::default().fg(theme.dim)),
+        Span::styled(
+            summary.total_requests.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(usage_text("Cost ", "费用 "), Style::default().fg(theme.dim)),
+        Span::styled(
+            format_money(summary.total_cost_usd),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            usage_text("Success ", "成功率 "),
+            Style::default().fg(theme.dim),
+        ),
+        Span::styled(
+            format_percent(summary.success_rate()),
+            success_rate_style(summary.success_rate(), theme).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn usage_cache_hit_compact_line(
+    summary: &UsageSummarySnapshot,
+    theme: &super::theme::Theme,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            usage_text("Cache Hit ", "缓存命中率 "),
+            Style::default().fg(theme.dim),
+        ),
+        Span::styled(
+            format_percent(summary.cache_hit_rate()),
+            cache_hit_rate_style(summary.cache_hit_rate(), theme).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(usage_text("Read ", "读取 "), Style::default().fg(theme.dim)),
+        Span::styled(
+            format_token_compact(summary.cache_read_tokens),
+            Style::default().fg(theme.comment),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            usage_text("Write ", "写入 "),
+            Style::default().fg(theme.dim),
+        ),
+        Span::styled(
+            format_token_compact(summary.cache_creation_tokens),
+            Style::default().fg(theme.comment),
+        ),
+    ])
+}
+
+fn render_usage_cache_hit_line(
+    frame: &mut Frame<'_>,
+    summary: &UsageSummarySnapshot,
+    area: Rect,
+    theme: &super::theme::Theme,
+) {
+    if area.width < 20 || area.height == 0 {
+        return;
+    }
+
+    let rate = summary.cache_hit_rate();
+    let ratio = rate.unwrap_or_default().clamp(0.0, 100.0) / 100.0;
+    let label = if area.width >= 64 {
+        Line::from(vec![
+            Span::styled(
+                usage_text("Cache Hit ", "缓存命中率 "),
+                Style::default().fg(theme.dim),
+            ),
+            Span::styled(
+                format_percent(rate),
+                cache_hit_rate_style(rate, theme).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", Style::default().fg(theme.dim)),
+            Span::styled(usage_text("read ", "读取 "), Style::default().fg(theme.dim)),
+            Span::styled(
+                format_token_compact(summary.cache_read_tokens),
+                Style::default().fg(theme.comment),
+            ),
+            Span::styled(" / ", Style::default().fg(theme.dim)),
+            Span::styled(
+                usage_text("write ", "写入 "),
+                Style::default().fg(theme.dim),
+            ),
+            Span::styled(
+                format_token_compact(summary.cache_creation_tokens),
+                Style::default().fg(theme.comment),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                usage_text("Cache Hit ", "缓存命中率 "),
+                Style::default().fg(theme.dim),
+            ),
+            Span::styled(
+                format_percent(rate),
+                cache_hit_rate_style(rate, theme).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
+
+    let gauge = LineGauge::default()
+        .label(label)
+        .filled_symbol(symbols::line::THICK_HORIZONTAL)
+        .unfilled_symbol(symbols::line::HORIZONTAL)
+        .filled_style(Style::default().fg(theme.accent))
+        .unfilled_style(Style::default().fg(theme.dim))
+        .ratio(ratio);
+    frame.render_widget(gauge, area);
 }
 
 fn render_usage_trend(
@@ -1230,6 +1388,15 @@ fn success_rate_style(value: Option<f64>, theme: &super::theme::Theme) -> Style 
         Some(value) if value >= 95.0 => Style::default().fg(theme.ok),
         Some(value) if value >= 80.0 => Style::default().fg(theme.warn),
         Some(_) => Style::default().fg(theme.err),
+        None => Style::default().fg(theme.comment),
+    }
+}
+
+fn cache_hit_rate_style(value: Option<f64>, theme: &super::theme::Theme) -> Style {
+    match value {
+        Some(value) if value >= 60.0 => Style::default().fg(theme.ok),
+        Some(value) if value >= 25.0 => Style::default().fg(theme.warn),
+        Some(_) => Style::default().fg(theme.comment),
         None => Style::default().fg(theme.comment),
     }
 }

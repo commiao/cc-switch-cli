@@ -229,7 +229,7 @@ fn tui_usage_overview_keeps_metric_values_near_labels() {
         .unwrap_or_else(|| panic!("missing cache border in:\n{all}"));
     assert_eq!(secondary_y - primary_y, 1, "{all}");
     assert_eq!(tertiary_y - secondary_y, 1, "{all}");
-    assert_eq!(cache_border_y - tertiary_y, 2, "{all}");
+    assert_eq!(cache_border_y - tertiary_y, 1, "{all}");
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn tui_usage_overview_short_height_keeps_even_spacing() {
         .unwrap_or_else(|| panic!("missing cache border in:\n{all}"));
     assert_eq!(secondary_y - primary_y, 1, "{all}");
     assert_eq!(tertiary_y - secondary_y, 1, "{all}");
-    assert_eq!(cache_border_y - tertiary_y, 2, "{all}");
+    assert_eq!(cache_border_y - tertiary_y, 1, "{all}");
 }
 
 #[test]

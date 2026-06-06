@@ -25,7 +25,7 @@ pub(super) fn render_usage(
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(9),
+            Constraint::Length(8),
             Constraint::Min(0),
         ])
         .split(inner);
@@ -178,26 +178,6 @@ fn render_usage_metrics(
         return;
     }
 
-    if inner.height >= 7 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-
-        render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
-        render_usage_metric_row(frame, rows[1], &usage_secondary_metrics(summary), theme);
-        render_usage_metric_row(frame, rows[2], &usage_tertiary_metrics(summary), theme);
-        render_usage_cache_hit_line(frame, summary, rows[4], theme);
-        return;
-    }
-
     if inner.height >= 6 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -206,12 +186,12 @@ fn render_usage_metrics(
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(3),
-                Constraint::Min(0),
             ])
             .split(inner);
 
         render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
         render_usage_metric_row(frame, rows[1], &usage_secondary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[2], &usage_tertiary_metrics(summary), theme);
         render_usage_cache_hit_line(frame, summary, rows[3], theme);
         return;
     }
@@ -223,7 +203,6 @@ fn render_usage_metrics(
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(3),
-                Constraint::Min(0),
             ])
             .split(inner);
 

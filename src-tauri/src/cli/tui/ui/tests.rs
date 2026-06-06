@@ -227,8 +227,8 @@ fn tui_usage_overview_keeps_metric_values_near_labels() {
         .lines()
         .position(|line| line.contains('╭'))
         .unwrap_or_else(|| panic!("missing cache border in:\n{all}"));
-    assert_eq!(secondary_y - primary_y, 2, "{all}");
-    assert_eq!(tertiary_y - secondary_y, 2, "{all}");
+    assert_eq!(secondary_y - primary_y, 1, "{all}");
+    assert_eq!(tertiary_y - secondary_y, 1, "{all}");
     assert_eq!(cache_border_y - tertiary_y, 2, "{all}");
 }
 
@@ -256,16 +256,18 @@ fn tui_usage_overview_short_height_keeps_even_spacing() {
 
     assert!(all.contains("Real Tokens  1.8k"), "{all}");
     assert!(all.contains("Input  1.0k"), "{all}");
-    assert!(!all.contains("Cost / Req"), "{all}");
+    assert!(all.contains("Cost / Req  $0.312"), "{all}");
 
     let primary_y = line_index(&all, "Real Tokens");
     let secondary_y = line_index(&all, "Input");
+    let tertiary_y = line_index(&all, "Errors");
     let cache_border_y = all
         .lines()
         .position(|line| line.contains('╭'))
         .unwrap_or_else(|| panic!("missing cache border in:\n{all}"));
-    assert_eq!(secondary_y - primary_y, 2, "{all}");
-    assert_eq!(cache_border_y - secondary_y, 2, "{all}");
+    assert_eq!(secondary_y - primary_y, 1, "{all}");
+    assert_eq!(tertiary_y - secondary_y, 1, "{all}");
+    assert_eq!(cache_border_y - tertiary_y, 2, "{all}");
 }
 
 #[test]

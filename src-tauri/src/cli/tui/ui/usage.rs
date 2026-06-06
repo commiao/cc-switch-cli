@@ -20,13 +20,12 @@ pub(super) fn render_usage(
     frame.render_widget(outer.clone(), area);
     let inner = outer.inner(area);
 
-    let overview_height = if inner.height >= 20 { 11 } else { 9 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(overview_height),
+            Constraint::Length(9),
             Constraint::Min(0),
         ])
         .split(inner);
@@ -179,28 +178,6 @@ fn render_usage_metrics(
         return;
     }
 
-    if inner.height >= 9 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-
-        render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
-        render_usage_metric_row(frame, rows[2], &usage_secondary_metrics(summary), theme);
-        render_usage_metric_row(frame, rows[4], &usage_tertiary_metrics(summary), theme);
-        render_usage_cache_hit_line(frame, summary, rows[6], theme);
-        return;
-    }
-
     if inner.height >= 7 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -215,8 +192,27 @@ fn render_usage_metrics(
             .split(inner);
 
         render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
-        render_usage_metric_row(frame, rows[2], &usage_secondary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[1], &usage_secondary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[2], &usage_tertiary_metrics(summary), theme);
         render_usage_cache_hit_line(frame, summary, rows[4], theme);
+        return;
+    }
+
+    if inner.height >= 6 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+
+        render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
+        render_usage_metric_row(frame, rows[1], &usage_secondary_metrics(summary), theme);
+        render_usage_cache_hit_line(frame, summary, rows[3], theme);
         return;
     }
 

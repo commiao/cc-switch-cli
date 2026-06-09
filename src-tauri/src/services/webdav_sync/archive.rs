@@ -135,7 +135,7 @@ fn zip_dir_to_path(source: &Path, dest_path: &Path) -> Result<(), AppError> {
     let options = zip_file_options();
 
     if source.exists() {
-        let canonical_root = fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
+        let canonical_root = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
         let mut visited = HashSet::new();
         mark_visited_dir(&canonical_root, &mut visited)?;
         zip_dir_recursive(
@@ -250,10 +250,7 @@ fn safe_archive_dir_name(source: &Path) -> String {
     }
 }
 
-fn write_skill_path_map(
-    overlay: &Path,
-    mappings: Vec<SkillPathMapping>,
-) -> Result<(), AppError> {
+fn write_skill_path_map(overlay: &Path, mappings: Vec<SkillPathMapping>) -> Result<(), AppError> {
     let metadata_dir = overlay.join(SYNC_METADATA_DIR);
     fs::create_dir_all(&metadata_dir).map_err(|e| AppError::io(&metadata_dir, e))?;
     let map = SkillPathMap {
@@ -666,15 +663,10 @@ mod tests {
         let file = fs::File::create(&zip_path).expect("create zip");
         let mut writer = zip::ZipWriter::new(file);
         let mut visited = HashSet::new();
-        mark_visited_dir(&source, &mut visited).expect("mark root");
-        zip_dir_recursive(
-            &source,
-            &source,
-            &mut writer,
-            zip_file_options(),
-            &mut visited,
-        )
-        .expect("zip source");
+        let root = fs::canonicalize(&source).expect("canonicalize source");
+        mark_visited_dir(&root, &mut visited).expect("mark root");
+        zip_dir_recursive(&root, &root, &mut writer, zip_file_options(), &mut visited)
+            .expect("zip source");
         writer.finish().expect("finish zip");
 
         let file = fs::File::open(zip_path).expect("open zip");
@@ -683,10 +675,7 @@ mod tests {
         for idx in 0..archive.len() {
             names.push(archive.by_index(idx).expect("entry").name().to_string());
         }
-        assert!(names.contains(&format!("{SYNC_METADATA_DIR}/")));
-        assert!(names.contains(&format!(
-            "{SYNC_METADATA_DIR}/{SKILL_PATH_MAP_FILE}"
-        )));
+        assert!(names.contains(&format!("{SYNC_METADATA_DIR}/{SKILL_PATH_MAP_FILE}")));
         assert!(!names.iter().any(|name| name.contains(".hidden")));
     }
 

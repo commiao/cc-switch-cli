@@ -17,6 +17,25 @@ const MAX_ZIP_ENTRIES: usize = 10_000;
 const MAX_ZIP_EXTRACT_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
 const SYNC_METADATA_DIR: &str = ".cc-switch-sync";
 const SKILL_PATH_MAP_FILE: &str = "skill-path-map.json";
+const ZIP_EXCLUDED_DIRS: &[&str] = &[
+    ".cache",
+    ".git",
+    ".hg",
+    ".next",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "logs",
+    "node_modules",
+    "target",
+    "tmp",
+    "venv",
+];
 
 fn localized(key: &'static str, zh: impl Into<String>, en: impl Into<String>) -> AppError {
     AppError::localized(key, zh, en)
@@ -322,6 +341,10 @@ pub fn zip_dir_recursive(
             continue;
         }
 
+        if path.is_dir() && should_exclude_zip_dir(&name_str) {
+            continue;
+        }
+
         // 解析符号链接，确保目标在 root 内
         let real_path = match fs::canonicalize(&path) {
             Ok(p) if p.starts_with(root) => p,
@@ -388,6 +411,12 @@ pub fn zip_dir_recursive(
         }
     }
     Ok(())
+}
+
+fn should_exclude_zip_dir(name: &str) -> bool {
+    ZIP_EXCLUDED_DIRS
+        .iter()
+        .any(|excluded| name.eq_ignore_ascii_case(excluded))
 }
 
 // ---------------------------------------------------------------------------
@@ -647,17 +676,31 @@ mod tests {
     }
 
     #[test]
-    fn zip_dir_recursive_keeps_sync_metadata_but_skips_other_dotdirs() {
+    fn should_exclude_zip_dir_matches_dependency_and_runtime_dirs() {
+        assert!(should_exclude_zip_dir("node_modules"));
+        assert!(should_exclude_zip_dir("Node_Modules"));
+        assert!(should_exclude_zip_dir("logs"));
+        assert!(should_exclude_zip_dir(".venv"));
+        assert!(!should_exclude_zip_dir("scripts"));
+        assert!(!should_exclude_zip_dir("assets"));
+    }
+
+    #[test]
+    fn zip_dir_recursive_keeps_sync_metadata_but_skips_excluded_dirs() {
         let tmp = tempdir().expect("tempdir");
         let source = tmp.path().join("skills");
         fs::create_dir_all(source.join(SYNC_METADATA_DIR)).expect("create metadata");
         fs::create_dir_all(source.join(".hidden")).expect("create hidden");
+        fs::create_dir_all(source.join("node_modules")).expect("create node_modules");
+        fs::create_dir_all(source.join("logs")).expect("create logs");
         fs::write(
             source.join(SYNC_METADATA_DIR).join(SKILL_PATH_MAP_FILE),
             "{}",
         )
         .expect("write metadata");
         fs::write(source.join(".hidden").join("secret.txt"), "secret").expect("write hidden");
+        fs::write(source.join("node_modules").join("dep.js"), "dep").expect("write dep");
+        fs::write(source.join("logs").join("run.log"), "log").expect("write log");
 
         let zip_path = tmp.path().join("skills.zip");
         let file = fs::File::create(&zip_path).expect("create zip");
@@ -677,6 +720,8 @@ mod tests {
         }
         assert!(names.contains(&format!("{SYNC_METADATA_DIR}/{SKILL_PATH_MAP_FILE}")));
         assert!(!names.iter().any(|name| name.contains(".hidden")));
+        assert!(!names.iter().any(|name| name.contains("node_modules")));
+        assert!(!names.iter().any(|name| name.contains("logs/")));
     }
 
     #[test]

@@ -1,18 +1,22 @@
 //! Skills ZIP 打包 / 解压 + 备份回滚
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tempfile::{tempdir, TempDir};
 use zip::{write::SimpleFileOptions, DateTime};
 
+use crate::database::Database;
 use crate::error::AppError;
 use crate::services::skill::SkillService;
 
 const MAX_ZIP_ENTRIES: usize = 10_000;
 const MAX_ZIP_EXTRACT_BYTES: u64 = 512 * 1024 * 1024; // 512 MB
+const SYNC_METADATA_DIR: &str = ".cc-switch-sync";
+const SKILL_PATH_MAP_FILE: &str = "skill-path-map.json";
 
 fn localized(key: &'static str, zh: impl Into<String>, en: impl Into<String>) -> AppError {
     AppError::localized(key, zh, en)
@@ -80,8 +84,48 @@ impl SkillsBackup {
 // ZIP 打包
 // ---------------------------------------------------------------------------
 
-pub fn zip_skills_ssot(dest_path: &Path) -> Result<(), AppError> {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkillPathMapping {
+    pub original_directory: String,
+    pub archive_directory: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SkillPathMap {
+    version: u32,
+    mappings: Vec<SkillPathMapping>,
+}
+
+pub fn zip_skills_for_sync(db: &Database, dest_path: &Path) -> Result<(), AppError> {
     let source = SkillService::get_ssot_dir()?;
+    let tmp = tempdir().map_err(|e| {
+        io_context_localized(
+            "webdav.sync.skills_overlay_tmpdir_failed",
+            "创建 skills 同步临时目录失败",
+            "Failed to create temporary directory for skills sync overlay",
+            e,
+        )
+    })?;
+    let overlay = tmp.path().join("skills-overlay");
+
+    if source.exists() {
+        copy_dir_recursive(&source, &overlay)?;
+        let _ = fs::remove_dir_all(overlay.join(SYNC_METADATA_DIR));
+    } else {
+        fs::create_dir_all(&overlay).map_err(|e| AppError::io(&overlay, e))?;
+    }
+
+    let mappings = copy_external_skill_dirs_into_overlay(db, &source, &overlay)?;
+    if !mappings.is_empty() {
+        write_skill_path_map(&overlay, mappings)?;
+    }
+
+    zip_dir_to_path(&overlay, dest_path)
+}
+
+fn zip_dir_to_path(source: &Path, dest_path: &Path) -> Result<(), AppError> {
     if let Some(parent) = dest_path.parent() {
         fs::create_dir_all(parent).map_err(|e| AppError::io(parent, e))?;
     }
@@ -110,6 +154,139 @@ pub fn zip_skills_ssot(dest_path: &Path) -> Result<(), AppError> {
             format!("Failed to write skills.zip: {e}"),
         )
     })?;
+    Ok(())
+}
+
+fn copy_external_skill_dirs_into_overlay(
+    db: &Database,
+    ssot_dir: &Path,
+    overlay: &Path,
+) -> Result<Vec<SkillPathMapping>, AppError> {
+    let canonical_ssot = fs::canonicalize(ssot_dir).ok();
+    let mut used_dirs = collect_overlay_top_level_dirs(overlay)?;
+    let mut mappings = Vec::new();
+
+    for skill in db.get_all_installed_skills()?.values() {
+        let source = PathBuf::from(&skill.directory);
+        if !source.is_absolute() || !source.join("SKILL.md").is_file() {
+            continue;
+        }
+
+        let canonical_source = match fs::canonicalize(&source) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+        if canonical_ssot
+            .as_ref()
+            .is_some_and(|root| canonical_source.starts_with(root))
+        {
+            continue;
+        }
+
+        let archive_dir = unique_external_archive_dir(&canonical_source, &mut used_dirs);
+        let dest = overlay.join(&archive_dir);
+        if dest.exists() {
+            fs::remove_dir_all(&dest).map_err(|e| AppError::io(&dest, e))?;
+        }
+        copy_dir_recursive(&canonical_source, &dest)?;
+        mappings.push(SkillPathMapping {
+            original_directory: skill.directory.clone(),
+            archive_directory: archive_dir,
+        });
+    }
+
+    mappings.sort_by(|a, b| a.original_directory.cmp(&b.original_directory));
+    Ok(mappings)
+}
+
+fn collect_overlay_top_level_dirs(overlay: &Path) -> Result<HashSet<String>, AppError> {
+    let mut dirs = HashSet::new();
+    if !overlay.exists() {
+        return Ok(dirs);
+    }
+    for entry in fs::read_dir(overlay).map_err(|e| AppError::io(overlay, e))? {
+        let entry = entry.map_err(|e| AppError::io(overlay, e))?;
+        if entry.path().is_dir() {
+            dirs.insert(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    Ok(dirs)
+}
+
+fn unique_external_archive_dir(source: &Path, used_dirs: &mut HashSet<String>) -> String {
+    let base = safe_archive_dir_name(source);
+    if used_dirs.insert(base.clone()) {
+        return base;
+    }
+    for idx in 2.. {
+        let candidate = format!("{base}-{idx}");
+        if used_dirs.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded collision loop should always return");
+}
+
+fn safe_archive_dir_name(source: &Path) -> String {
+    let raw = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("external-skill");
+    let sanitized: String = raw
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches(|ch| matches!(ch, '.' | '-' | '_'));
+    if trimmed.is_empty() {
+        "external-skill".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn write_skill_path_map(
+    overlay: &Path,
+    mappings: Vec<SkillPathMapping>,
+) -> Result<(), AppError> {
+    let metadata_dir = overlay.join(SYNC_METADATA_DIR);
+    fs::create_dir_all(&metadata_dir).map_err(|e| AppError::io(&metadata_dir, e))?;
+    let map = SkillPathMap {
+        version: 1,
+        mappings,
+    };
+    let bytes =
+        serde_json::to_vec_pretty(&map).map_err(|e| AppError::JsonSerialize { source: e })?;
+    crate::config::atomic_write(&metadata_dir.join(SKILL_PATH_MAP_FILE), &bytes)
+}
+
+pub(crate) fn read_restored_skill_path_map() -> Result<HashMap<String, String>, AppError> {
+    let path = SkillService::get_ssot_dir()?
+        .join(SYNC_METADATA_DIR)
+        .join(SKILL_PATH_MAP_FILE);
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let bytes = fs::read(&path).map_err(|e| AppError::io(&path, e))?;
+    let map: SkillPathMap = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Config(format!("Invalid skill path map: {e}")))?;
+    Ok(map
+        .mappings
+        .into_iter()
+        .map(|entry| (entry.original_directory, entry.archive_directory))
+        .collect())
+}
+
+pub(crate) fn remove_restored_skill_sync_metadata() -> Result<(), AppError> {
+    let metadata_dir = SkillService::get_ssot_dir()?.join(SYNC_METADATA_DIR);
+    if metadata_dir.exists() {
+        fs::remove_dir_all(&metadata_dir).map_err(|e| AppError::io(&metadata_dir, e))?;
+    }
     Ok(())
 }
 
@@ -143,8 +320,8 @@ pub fn zip_dir_recursive(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // 跳过 dotfiles
-        if name_str.starts_with('.') {
+        // 跳过 dotfiles，但保留 WebDAV sync 自己的可移植路径元数据。
+        if name_str.starts_with('.') && name_str != SYNC_METADATA_DIR {
             continue;
         }
 
@@ -449,6 +626,68 @@ mod tests {
         let mut visited = HashSet::new();
         assert!(mark_visited_dir(&dir, &mut visited).expect("first visit"));
         assert!(!mark_visited_dir(&dir, &mut visited).expect("second visit"));
+    }
+
+    #[test]
+    fn safe_archive_dir_name_sanitizes_external_paths() {
+        assert_eq!(
+            safe_archive_dir_name(Path::new("/tmp/openclaw/my skill")),
+            "my-skill"
+        );
+        assert_eq!(
+            safe_archive_dir_name(Path::new("/tmp/openclaw/.hidden")),
+            "hidden"
+        );
+    }
+
+    #[test]
+    fn unique_external_archive_dir_avoids_collisions() {
+        let mut used = HashSet::from(["calendar".to_string(), "calendar-2".to_string()]);
+        assert_eq!(
+            unique_external_archive_dir(Path::new("/tmp/openclaw/calendar"), &mut used),
+            "calendar-3"
+        );
+    }
+
+    #[test]
+    fn zip_dir_recursive_keeps_sync_metadata_but_skips_other_dotdirs() {
+        let tmp = tempdir().expect("tempdir");
+        let source = tmp.path().join("skills");
+        fs::create_dir_all(source.join(SYNC_METADATA_DIR)).expect("create metadata");
+        fs::create_dir_all(source.join(".hidden")).expect("create hidden");
+        fs::write(
+            source.join(SYNC_METADATA_DIR).join(SKILL_PATH_MAP_FILE),
+            "{}",
+        )
+        .expect("write metadata");
+        fs::write(source.join(".hidden").join("secret.txt"), "secret").expect("write hidden");
+
+        let zip_path = tmp.path().join("skills.zip");
+        let file = fs::File::create(&zip_path).expect("create zip");
+        let mut writer = zip::ZipWriter::new(file);
+        let mut visited = HashSet::new();
+        mark_visited_dir(&source, &mut visited).expect("mark root");
+        zip_dir_recursive(
+            &source,
+            &source,
+            &mut writer,
+            zip_file_options(),
+            &mut visited,
+        )
+        .expect("zip source");
+        writer.finish().expect("finish zip");
+
+        let file = fs::File::open(zip_path).expect("open zip");
+        let mut archive = zip::ZipArchive::new(file).expect("read zip");
+        let mut names = Vec::new();
+        for idx in 0..archive.len() {
+            names.push(archive.by_index(idx).expect("entry").name().to_string());
+        }
+        assert!(names.contains(&format!("{SYNC_METADATA_DIR}/")));
+        assert!(names.contains(&format!(
+            "{SYNC_METADATA_DIR}/{SKILL_PATH_MAP_FILE}"
+        )));
+        assert!(!names.iter().any(|name| name.contains(".hidden")));
     }
 
     #[test]

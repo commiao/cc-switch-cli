@@ -20,7 +20,10 @@ use crate::settings::{
     get_webdav_sync_settings, update_webdav_sync_status, WebDavSyncSettings, WebDavSyncStatus,
 };
 
-use self::archive::{restore_skills_zip, zip_skills_ssot, SkillsBackup};
+use self::archive::{
+    read_restored_skill_path_map, remove_restored_skill_sync_metadata, restore_skills_zip,
+    zip_skills_for_sync, SkillsBackup,
+};
 
 // ---------------------------------------------------------------------------
 // i18n 辅助
@@ -322,11 +325,12 @@ fn build_local_snapshot(_settings: &WebDavSyncSettings) -> Result<LocalSnapshot,
     })?;
 
     // 导出 DB
-    let db_sql = Database::init()?.export_sql_string_for_sync()?.into_bytes();
+    let db = Database::init()?;
+    let db_sql = db.export_sql_string_for_sync()?.into_bytes();
 
     // 打包 skills
     let skills_zip_path = tmp.path().join(REMOTE_SKILLS_ZIP);
-    zip_skills_ssot(&skills_zip_path)?;
+    zip_skills_for_sync(&db, &skills_zip_path)?;
     let skills_zip =
         std::fs::read(&skills_zip_path).map_err(|e| AppError::io(&skills_zip_path, e))?;
 
@@ -595,7 +599,70 @@ fn apply_snapshot(db_sql: &[u8], skills_zip: &[u8]) -> Result<(), AppError> {
         return Err(db_err);
     }
 
+    normalize_restored_skill_records()?;
+
     Ok(())
+}
+
+fn normalize_restored_skill_records() -> Result<(), AppError> {
+    let path_map = read_restored_skill_path_map()?;
+    let ssot_dir = crate::services::skill::SkillService::get_ssot_dir()?;
+    let db = Database::init()?;
+    let skills = db.get_all_installed_skills()?;
+
+    for (_, mut skill) in skills {
+        let original_directory = skill.directory.clone();
+        let original_path = std::path::Path::new(&original_directory);
+        if !original_path.is_absolute() {
+            continue;
+        }
+
+        let Some(restored_directory) =
+            resolve_restored_skill_directory(&path_map, &ssot_dir, &original_directory)
+        else {
+            continue;
+        };
+
+        let original_id = skill.id.clone();
+        if skill.id == format!("local:{original_directory}") {
+            skill.id = format!("local:{restored_directory}");
+        } else if skill.id == original_directory {
+            skill.id = restored_directory.clone();
+        }
+        if skill.name == original_directory {
+            skill.name = restored_directory.clone();
+        }
+        skill.directory = restored_directory;
+
+        if skill.id != original_id {
+            let _ = db.delete_skill(&original_id)?;
+        }
+        db.save_skill(&skill)?;
+    }
+
+    remove_restored_skill_sync_metadata()?;
+    Ok(())
+}
+
+fn resolve_restored_skill_directory(
+    path_map: &std::collections::HashMap<String, String>,
+    ssot_dir: &std::path::Path,
+    original_directory: &str,
+) -> Option<String> {
+    if let Some(mapped) = path_map.get(original_directory) {
+        if ssot_dir.join(mapped).join("SKILL.md").is_file() {
+            return Some(mapped.clone());
+        }
+    }
+
+    let fallback = std::path::Path::new(original_directory)
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    ssot_dir
+        .join(fallback)
+        .join("SKILL.md")
+        .is_file()
+        .then(|| fallback.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -955,6 +1022,7 @@ async fn ensure_restore_allowed() -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn sample_settings() -> WebDavSyncSettings {
         WebDavSyncSettings {
@@ -1140,6 +1208,43 @@ mod tests {
     #[test]
     fn validate_artifact_size_limit_exceeded() {
         assert!(validate_artifact_size_limit("db.sql", MAX_SYNC_ARTIFACT_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn resolve_restored_skill_directory_prefers_path_map() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tmp.path().join("calendar-renamed")).expect("create skill dir");
+        fs::write(tmp.path().join("calendar-renamed").join("SKILL.md"), "").expect("write skill");
+
+        let path_map = std::collections::HashMap::from([(
+            "/home/admin/clawd/skills/calendar".to_string(),
+            "calendar-renamed".to_string(),
+        )]);
+
+        assert_eq!(
+            resolve_restored_skill_directory(
+                &path_map,
+                tmp.path(),
+                "/home/admin/clawd/skills/calendar"
+            ),
+            Some("calendar-renamed".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_restored_skill_directory_falls_back_to_basename() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(tmp.path().join("calendar")).expect("create skill dir");
+        fs::write(tmp.path().join("calendar").join("SKILL.md"), "").expect("write skill");
+
+        assert_eq!(
+            resolve_restored_skill_directory(
+                &std::collections::HashMap::new(),
+                tmp.path(),
+                "/home/admin/clawd/skills/calendar"
+            ),
+            Some("calendar".to_string())
+        );
     }
 
     #[test]

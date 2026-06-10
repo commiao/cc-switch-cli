@@ -26,6 +26,7 @@ vitest-report.json
 skill.md
 scripts/*
 !scripts/generate_latest_json.py
+!scripts/check_webdav_snapshot.py
 
 .agent/
 .agents/
